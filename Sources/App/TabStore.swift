@@ -651,7 +651,7 @@ class TabStore: ObservableObject {
     private func mergeCloudTab(at localIndex: Int, data: CloudTabRecord, result: inout CloudMergeResult) -> Bool {
         if tabs[localIndex].content != data.content {
             mergeCloudContent(at: localIndex, data: data, result: &result)
-        } else if data.lastModified >= tabs[localIndex].lastModified,
+        } else if data.lastModified > tabs[localIndex].lastModified,
                   tabs[localIndex].name != data.name
                     || tabs[localIndex].language != data.language
                     || tabs[localIndex].languageLocked != data.languageLocked {
@@ -718,19 +718,19 @@ class TabStore: ObservableObject {
     private func mergeCloudContent(at index: Int, data: CloudTabRecord, result: inout CloudMergeResult) {
         let id = data.id
         let localText = tabs[index].content
-        let remoteHead = data.headVersionID.flatMap { versionStore.version(withID: $0) }
-        let remoteDevice = remoteHead?.device
+        let localID = TabVersion.makeID(tabID: id, text: localText)
+        let remoteID = TabVersion.makeID(tabID: id, text: data.content)
+        let remoteDevice = knownRemoteDevice(versionIDs: [remoteID, data.headVersionID])
 
         dropSnapshotState(id: id)
         let hadHistory = versionStore.latest(for: id) != nil
         appendVersion(id: id, text: localText, source: .conflict)
 
-        let localID = TabVersion.makeID(tabID: id, text: localText)
-        let remoteID = TabVersion.makeID(tabID: id, text: data.content)
         // The remote text descends from the remote head, not from our snapshot.
         let remoteParent = data.headVersionID == remoteID ? nil : data.headVersionID
         if (!hadHistory && localText.isEmpty) || data.headVersionID == localID {
             tabs[index].content = data.content
+            tabs[index].isDirty = !(tabs[index].fileURL == nil && data.content.isEmpty)
             tabs[index].name = data.name
             tabs[index].language = data.language
             tabs[index].languageLocked = data.languageLocked
@@ -747,6 +747,8 @@ class TabStore: ObservableObject {
             appendVersion(id: id, text: merged, source: .edit)
             if merged == data.content {
                 tabs[index].name = data.name
+            } else if tabs[index].fileURL == nil {
+                cloudRecordChanged(id)
             }
             result.updatedTabIDs.append(id)
             return
@@ -762,7 +764,8 @@ class TabStore: ObservableObject {
             source: .conflict,
             device: remoteDevice ?? "iCloud",
             label: label,
-            parentID: remoteParent
+            parentID: remoteParent,
+            live: false
         )
         tabs[index].hasConflict = true
         result.flaggedTabIDs.append(id)
@@ -787,6 +790,19 @@ class TabStore: ObservableObject {
             if ours.contains(version.id) { return version }
             seen.insert(version.id)
             candidate = version.parentID.flatMap { versionStore.version(withID: $0) }
+        }
+        return nil
+    }
+
+    /// The device that wrote the remote text: the first of the given versions
+    /// (the remote text's own, then the remote head) that has synced to us and
+    /// was not written by this device – the remote head may well be a version
+    /// of ours that the other device adopted.
+    private func knownRemoteDevice(versionIDs: [String?]) -> String? {
+        for case let id? in versionIDs {
+            if let device = versionStore.version(withID: id)?.device, device != deviceName {
+                return device
+            }
         }
         return nil
     }
@@ -842,6 +858,9 @@ class TabStore: ObservableObject {
 
     private var pendingSnapshots: [UUID: PendingSnapshot] = [:]
     private var heldSnapshots: [UUID: PendingSnapshot] = [:]
+    /// Each tab's last snapshotted live text – what the next snapshot descends
+    /// from. Remote copies parked by a conflict never count.
+    private var liveSnapshotTexts: [UUID: String] = [:]
 
     func isScratchTab(_ id: UUID) -> Bool {
         tabs.contains { $0.id == id && $0.fileURL == nil } || trashedTabs.contains { $0.id == id }
@@ -925,6 +944,8 @@ class TabStore: ObservableObject {
         appendVersion(id: id, text: tabs[index].content, source: .restore)
         tabs[index].hasConflict = false
         setContentExternally(id: id, content: version.text, cursor: 0)
+        liveSnapshotTexts[id] = version.text
+        setHeadVersion(id: id, versionID: version.id)
     }
 
     private func cancelPendingSnapshot(id: UUID) {
@@ -939,8 +960,10 @@ class TabStore: ObservableObject {
     /// Appends `text` as a version and records it as the tab's head – also
     /// when the same text is already in history, since the head names the
     /// text this device last recorded, which the other device fast-forwards to.
-    /// The parent is that head, not the newest version by date: versions
-    /// synced down from another device must not enter this device's lineage.
+    /// The parent follows the live text's lineage (`lineageParentID`), not the
+    /// newest version by date: versions synced down from another device must
+    /// not enter this device's lineage. `live` is false for a remote copy
+    /// parked by a conflict – it never becomes the parent of our next edit.
     @discardableResult
     private func appendVersion(
         id: UUID,
@@ -948,14 +971,14 @@ class TabStore: ObservableObject {
         source: TabVersion.Source,
         device: String? = nil,
         label: String? = nil,
-        parentID: String? = nil
+        parentID: String? = nil,
+        live: Bool = true
     ) -> Bool {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
-        let latest = versionStore.latest(for: id)
-        if latest == nil && text.isEmpty { return false }
+        if versionStore.latest(for: id) == nil && text.isEmpty { return false }
         let version = TabVersion(
             tabID: id,
-            parentID: parentID ?? tabs[index].headVersionID ?? latest?.id,
+            parentID: parentID ?? lineageParentID(for: id, at: index),
             createdAt: now(),
             device: device ?? deviceName,
             label: label,
@@ -968,14 +991,39 @@ class TabStore: ObservableObject {
         } else if let label, versionStore.version(withID: version.id)?.hasLabel == false {
             versionStore.setLabel(label, versionID: version.id, tabID: id)
         }
-        if tabs[index].headVersionID != version.id {
-            tabs[index].headVersionID = version.id
-            if tabs[index].fileURL == nil {
-                cloudRecordChanged(id)
-            }
-            scheduleSave()
+        if live {
+            liveSnapshotTexts[id] = text
         }
+        setHeadVersion(id: id, versionID: version.id)
         return appended
+    }
+
+    /// What the live text descends from: the version of its last snapshot,
+    /// then the persisted head after a relaunch, then the newest version.
+    /// Never blindly the newest – that may be a synced remote version, or the
+    /// remote copy a conflict just stored, and a wrong parent hides the common
+    /// ancestor from the other device's merge.
+    private func lineageParentID(for id: UUID, at index: Int) -> String? {
+        let list = versionStore.versions(for: id)
+        if let text = liveSnapshotTexts[id] {
+            let candidate = TabVersion.makeID(tabID: id, text: text)
+            if list.contains(where: { $0.id == candidate }) { return candidate }
+        }
+        if let head = tabs[index].headVersionID, list.contains(where: { $0.id == head }) {
+            return head
+        }
+        return list.first?.id
+    }
+
+    /// The head travels on the ScratchTab record, so a change is pushed even
+    /// though the content itself did not move.
+    private func setHeadVersion(id: UUID, versionID: String) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }), tabs[index].headVersionID != versionID else { return }
+        tabs[index].headVersionID = versionID
+        if tabs[index].fileURL == nil {
+            cloudRecordChanged(id)
+        }
+        scheduleSave()
     }
 
     // MARK: - KVS migration (v1.6.0 iCloud sync → App Store)
