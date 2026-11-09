@@ -218,7 +218,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSTool
         CloudSyncEngine.shared.fetchChanges()
     }
 
+    func applicationDidResignActive(_ notification: Notification) {
+        TabStore.shared.flushPendingVersions()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        TabStore.shared.flushPendingVersions()
         CloudSyncEngine.shared.flushRecordMetadata()
         ClipboardStore.shared.stopMonitoring()
         editorCoordinator?.saveActiveTabCursor()

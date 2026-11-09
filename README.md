@@ -197,7 +197,7 @@ Both versions use the same CloudKit container (`iCloud.com.nickustinov.itsypad`)
 
 ### iCloud sync
 
-Both versions use CloudKit via `CKSyncEngine` for syncing scratch tabs and clipboard history. The `CloudSyncEngine` singleton manages the sync lifecycle. See the record schema and sync flow in the [iOS migration docs](../itsypad-ios/docs/cloudkit-sync.md).
+Both versions use CloudKit via `CKSyncEngine` for syncing scratch tabs, their version history and clipboard history. The `CloudSyncEngine` singleton manages the sync lifecycle. See the record schema and sync flow in the [iOS migration docs](../itsypad-ios/docs/cloudkit-sync.md).
 
 ## Architecture
 
