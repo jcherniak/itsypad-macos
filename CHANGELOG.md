@@ -7,6 +7,9 @@ Features:
 - Format submenu in the Edit menu with markdown shortcuts for prose notes: Bold (⌘⇧B), Italic (⌘I), Strikethrough (⌘⇧X), Inline code (⌘⇧C), Heading (⌘⇧H) and Link (⌘K)
 - "On launch" setting in General: reopen the last tabs or start a new note
 - The fork now uses its own bundle identifier, team and iCloud container (com.justinc.itsypad)
+- Sync no longer discards edits: local text is saved to history before remote changes apply, non-overlapping edits merge, conflicts keep both
+- Trash for closed notes with restore, permanent delete and automatic emptying
+- History settings: keep count, keep days, trash auto-empty
 
 Fixes:
 - Turning the clipboard manager on or off in Settings takes effect immediately, without relaunching
