@@ -16,6 +16,16 @@ final class MenuBuilderTests: XCTestCase {
         XCTAssertEqual(outdentItem.keyEquivalentModifierMask, [.command])
     }
 
+    func testVersionHistoryFollowsSaveAsWithoutShortcut() throws {
+        let items = try XCTUnwrap(MenuBuilder(target: target).buildFileMenuItem(recentFilesMenu: NSMenu()).submenu?.items)
+        let saveAsIndex = try XCTUnwrap(items.firstIndex { $0.action == #selector(AppDelegate.saveFileAsAction) })
+        let historyItem = items[saveAsIndex + 1]
+
+        XCTAssertEqual(historyItem.action, #selector(AppDelegate.showVersionHistoryAction))
+        XCTAssertEqual(historyItem.keyEquivalent, "")
+        XCTAssertTrue(historyItem.target === target)
+    }
+
     func testTabNavigationKeepsCommandShiftBrackets() throws {
         let items = try XCTUnwrap(MenuBuilder(target: target).buildViewMenuItem().submenu?.items)
         let nextTabItem = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.nextTabAction) })
