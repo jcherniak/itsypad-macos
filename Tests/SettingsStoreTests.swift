@@ -8,7 +8,7 @@ final class SettingsStoreTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        suiteName = "com.nickustinov.itsypad.test.\(UUID().uuidString)"
+        suiteName = "com.justinc.itsypad.test.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suiteName)!
         store = SettingsStore(defaults: defaults)
     }
@@ -183,7 +183,7 @@ final class SettingsStoreTests: XCTestCase {
     // MARK: - Load from pre-populated defaults
 
     func testLoadFromPrePopulatedDefaults() {
-        let preSuiteName = "com.nickustinov.itsypad.test.\(UUID().uuidString)"
+        let preSuiteName = "com.justinc.itsypad.test.\(UUID().uuidString)"
         let preDefaults = UserDefaults(suiteName: preSuiteName)!
         preDefaults.set("Menlo", forKey: "editorFontName")
         preDefaults.set(18.0, forKey: "editorFontSize")

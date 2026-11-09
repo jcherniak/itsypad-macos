@@ -18,7 +18,7 @@
     <string>$(TeamIdentifierPrefix)$(CFBundleIdentifier)</string>
     <key>com.apple.developer.icloud-container-identifiers</key>
     <array>
-        <string>iCloud.com.nickustinov.itsypad</string>
+        <string>iCloud.com.justinc.itsypad</string>
     </array>
     <key>com.apple.developer.icloud-container-environment</key>
     <string>Production</string>
