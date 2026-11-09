@@ -13,6 +13,11 @@ struct TabData: Identifiable, Equatable {
     var cursorPosition: Int
     var lastModified: Date
     var headVersionID: String?
+    /// Synced as `fastForwardFromID`: after a kept-local conflict, the id of
+    /// the other device's text, so that device adopts ours while it still
+    /// holds that text. Stays set across our later snapshots until the other
+    /// side acknowledges or moves on.
+    var pendingFastForwardID: String?
     var deletedAt: Date?
     var deletedOn: String?
     /// Local only: set when a sync conflict kept this device's text and
@@ -32,6 +37,7 @@ struct TabData: Identifiable, Equatable {
         cursorPosition: Int = 0,
         lastModified: Date = Date(),
         headVersionID: String? = nil,
+        pendingFastForwardID: String? = nil,
         deletedAt: Date? = nil,
         deletedOn: String? = nil,
         hasConflict: Bool = false
@@ -48,6 +54,7 @@ struct TabData: Identifiable, Equatable {
         self.cursorPosition = cursorPosition
         self.lastModified = lastModified
         self.headVersionID = headVersionID
+        self.pendingFastForwardID = pendingFastForwardID
         self.deletedAt = deletedAt
         self.deletedOn = deletedOn
         self.hasConflict = hasConflict
@@ -69,6 +76,7 @@ extension TabData: Codable {
         cursorPosition = try c.decode(Int.self, forKey: .cursorPosition)
         lastModified = try c.decodeIfPresent(Date.self, forKey: .lastModified) ?? .distantPast
         headVersionID = try c.decodeIfPresent(String.self, forKey: .headVersionID)
+        pendingFastForwardID = try c.decodeIfPresent(String.self, forKey: .pendingFastForwardID)
         deletedAt = try c.decodeIfPresent(Date.self, forKey: .deletedAt)
         deletedOn = try c.decodeIfPresent(String.self, forKey: .deletedOn)
         hasConflict = try c.decodeIfPresent(Bool.self, forKey: .hasConflict) ?? false
@@ -649,6 +657,11 @@ class TabStore: ObservableObject {
 
     /// Returns true when only `lastModified` moved (nothing to notify, still save).
     private func mergeCloudTab(at localIndex: Int, data: CloudTabRecord, result: inout CloudMergeResult) -> Bool {
+        if let marker = tabs[localIndex].pendingFastForwardID,
+           data.content == tabs[localIndex].content || (data.headVersionID != nil && data.headVersionID != marker) {
+            // The other device adopted our text or moved on: the hint is spent.
+            clearPendingFastForward(at: localIndex)
+        }
         if tabs[localIndex].content != data.content {
             mergeCloudContent(at: localIndex, data: data, result: &result)
         } else if data.lastModified > tabs[localIndex].lastModified,
@@ -710,10 +723,12 @@ class TabStore: ObservableObject {
 
     /// Remote text differs from the live text. The live text is always
     /// snapshotted first, so nothing below can lose it. Then, in order:
-    /// fast-forward when the remote descends from our text, three-way merge
-    /// against the common ancestor when one is known, otherwise keep ours and
-    /// park the remote text in history as a labelled conflict version. The
-    /// remote device is only known through its head version, which syncs as a
+    /// fast-forward when the remote descends from our text or its sender
+    /// offers a fast-forward from exactly our text, three-way merge against
+    /// the common ancestor when one is known, otherwise keep ours and park the
+    /// remote text in history as a labelled conflict version – offering the
+    /// other device a fast-forward from that text in return. The remote
+    /// device is only known through its head version, which syncs as a
     /// TabVersion record.
     private func mergeCloudContent(at index: Int, data: CloudTabRecord, result: inout CloudMergeResult) {
         let id = data.id
@@ -728,7 +743,7 @@ class TabStore: ObservableObject {
 
         // The remote text descends from the remote head, not from our snapshot.
         let remoteParent = data.headVersionID == remoteID ? nil : data.headVersionID
-        if (!hadHistory && localText.isEmpty) || data.headVersionID == localID {
+        if (!hadHistory && localText.isEmpty) || data.headVersionID == localID || data.fastForwardFromID == localID {
             tabs[index].content = data.content
             tabs[index].isDirty = !(tabs[index].fileURL == nil && data.content.isEmpty)
             tabs[index].name = data.name
@@ -768,8 +783,19 @@ class TabStore: ObservableObject {
             live: false
         )
         tabs[index].hasConflict = true
+        tabs[index].pendingFastForwardID = remoteID
         result.flaggedTabIDs.append(id)
         cloudRecordChanged(id)
+    }
+
+    /// Drops the fast-forward hint and pushes the record without it.
+    private func clearPendingFastForward(at index: Int) {
+        guard tabs[index].pendingFastForwardID != nil else { return }
+        tabs[index].pendingFastForwardID = nil
+        if tabs[index].fileURL == nil {
+            cloudRecordChanged(tabs[index].id)
+        }
+        scheduleSave()
     }
 
     /// Common ancestor of our text and the remote head: the first version on
@@ -943,6 +969,7 @@ class TabStore: ObservableObject {
         commitHeldSnapshot(id: id)
         appendVersion(id: id, text: tabs[index].content, source: .restore)
         tabs[index].hasConflict = false
+        clearPendingFastForward(at: index)
         setContentExternally(id: id, content: version.text, cursor: 0)
         liveSnapshotTexts[id] = version.text
         setHeadVersion(id: id, versionID: version.id)
@@ -959,11 +986,12 @@ class TabStore: ObservableObject {
 
     /// Appends `text` as a version and records it as the tab's head – also
     /// when the same text is already in history, since the head names the
-    /// text this device last recorded, which the other device fast-forwards to.
-    /// The parent follows the live text's lineage (`lineageParentID`), not the
-    /// newest version by date: versions synced down from another device must
-    /// not enter this device's lineage. `live` is false for a remote copy
-    /// parked by a conflict – it never becomes the parent of our next edit.
+    /// live text this device last recorded. The parent follows the live
+    /// text's lineage (`lineageParentID`), not the newest version by date:
+    /// versions synced down from another device must not enter this device's
+    /// lineage. `live` is false for a remote copy parked by a conflict – it
+    /// never becomes the parent of our next edit, nor the head; the other
+    /// device is offered it through `pendingFastForwardID` instead.
     @discardableResult
     private func appendVersion(
         id: UUID,
@@ -993,8 +1021,8 @@ class TabStore: ObservableObject {
         }
         if live {
             liveSnapshotTexts[id] = text
+            setHeadVersion(id: id, versionID: version.id)
         }
-        setHeadVersion(id: id, versionID: version.id)
         return appended
     }
 

@@ -534,6 +534,7 @@ final class TabStoreTests: XCTestCase {
         id: UUID,
         content: String,
         head: String? = nil,
+        fastForward: String? = nil,
         name: String = "Remote",
         deletedAt: Date? = nil,
         deletedOn: String? = nil
@@ -546,6 +547,7 @@ final class TabStoreTests: XCTestCase {
             languageLocked: false,
             lastModified: Date().addingTimeInterval(60),
             headVersionID: head,
+            fastForwardFromID: fastForward,
             deletedAt: deletedAt,
             deletedOn: deletedOn
         )
@@ -566,7 +568,8 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(versions[0].label, "Conflict – another device \(clock.formatted(date: .omitted, time: .shortened))")
         XCTAssertEqual(versions[0].parentID, versions[1].id)
         XCTAssertNil(versions[1].label)
-        XCTAssertEqual(store.tabs.last?.headVersionID, versions[0].id)
+        XCTAssertEqual(store.tabs.last?.headVersionID, versions[1].id)
+        XCTAssertEqual(store.tabs.last?.pendingFastForwardID, versions[0].id)
         fireScheduledSnapshot()
         XCTAssertEqual(versionStore.versions(for: tabID).count, 2)
     }
@@ -805,7 +808,13 @@ final class TabStoreTests: XCTestCase {
         }
         func record(from source: TabStore) -> CloudTabRecord {
             let tab = source.tabs.first { $0.id == tabID }!
-            return cloudRecord(id: tabID, content: tab.content, head: tab.headVersionID, name: tab.name)
+            return cloudRecord(
+                id: tabID,
+                content: tab.content,
+                head: tab.headVersionID,
+                fastForward: tab.pendingFastForwardID,
+                name: tab.name
+            )
         }
 
         // Both start from one synced version.
@@ -829,7 +838,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(storeA.tabs.first { $0.id == tabID }?.content, "one\nTWO\nthree")
         XCTAssertTrue(storeA.tabs.first { $0.id == tabID }!.hasConflict)
 
-        // B then adopts A's text (A's head names B's text, so B fast-forwards).
+        // B then adopts A's text (A offers a fast-forward from B's text).
         sync(versionStoreA, to: versionStoreB)
         storeB.applyCloudTab(record(from: storeA))
         XCTAssertEqual(storeB.tabs.last?.content, "one\nTWO\nthree")
@@ -853,6 +862,206 @@ final class TabStoreTests: XCTestCase {
         storeA.applyCloudTab(record(from: storeB))
         XCTAssertEqual(storeA.tabs.first { $0.id == tabID }?.content, "one\nTWO\nthree\nfour")
         XCTAssertEqual(storeA.tabs.first { $0.id == tabID }?.headVersionID, newest.id)
+    }
+
+    /// A second device sharing this test's tabs: its own session and version
+    /// store. Versions travel between devices through `syncVersions`.
+    private struct OtherDevice {
+        let store: TabStore
+        let versions: VersionStore
+        let sessionURL: URL
+        let versionsURL: URL
+
+        func cleanUp() {
+            try? FileManager.default.removeItem(at: sessionURL)
+            try? FileManager.default.removeItem(at: versionsURL)
+        }
+    }
+
+    private func makeOtherDevice(name: String = "Other Mac") -> OtherDevice {
+        let sessionURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("json")
+        let versionsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("versions-\(UUID().uuidString)")
+        let versions = VersionStore(baseURL: versionsURL)
+        let store = makeStore(sessionURL: sessionURL, versionStore: versions, deviceName: name)
+        return OtherDevice(store: store, versions: versions, sessionURL: sessionURL, versionsURL: versionsURL)
+    }
+
+    private func syncVersions(of tabID: UUID, from: VersionStore, to: VersionStore) {
+        for version in from.versions(for: tabID).reversed() {
+            to.applyCloud(version)
+        }
+    }
+
+    /// The ScratchTab record `source` would push for the tab.
+    private func record(of tabID: UUID, from source: TabStore) -> CloudTabRecord {
+        let tab = source.tabs.first { $0.id == tabID }!
+        return cloudRecord(
+            id: tabID,
+            content: tab.content,
+            head: tab.headVersionID,
+            fastForward: tab.pendingFastForwardID,
+            name: tab.name
+        )
+    }
+
+    /// A and B share "one\ntwo\nthree" and then edit the same line; A hears
+    /// from B first and keeps its own text. Returns B.
+    private func makeSameLineConflict(tabID: UUID) -> OtherDevice {
+        let other = makeOtherDevice()
+        store.updateContent(id: tabID, content: "one\ntwo\nthree")
+        fireScheduledSnapshot()
+        syncVersions(of: tabID, from: versionStore, to: other.versions)
+        other.store.applyCloudTab(record(of: tabID, from: store))
+
+        clock.addTimeInterval(60)
+        store.updateContent(id: tabID, content: "one\nTWO\nthree")
+        fireScheduledSnapshot()
+        other.store.updateContent(id: tabID, content: "one\n2\nthree")
+        fireScheduledSnapshot()
+
+        clock.addTimeInterval(60)
+        syncVersions(of: tabID, from: other.versions, to: versionStore)
+        store.applyCloudTab(record(of: tabID, from: other.store))
+        return other
+    }
+
+    /// The hint to fast-forward lives apart from the lineage: A's later
+    /// snapshot moves the head on, yet B – still on its parked text – adopts
+    /// A's newest text without a conflict.
+    func testFastForwardHintSurvivesLaterSnapshotOnTheKeepingDevice() {
+        let tabID = newScratchTab()
+        let other = makeSameLineConflict(tabID: tabID)
+        defer { other.cleanUp() }
+        let parkedID = TabVersion.makeID(tabID: tabID, text: "one\n2\nthree")
+        let tabA = store.tabs.first { $0.id == tabID }!
+        XCTAssertEqual(tabA.content, "one\nTWO\nthree")
+        XCTAssertTrue(tabA.hasConflict)
+        XCTAssertEqual(tabA.headVersionID, TabVersion.makeID(tabID: tabID, text: "one\nTWO\nthree"))
+        XCTAssertEqual(tabA.pendingFastForwardID, parkedID)
+
+        clock.addTimeInterval(60)
+        store.updateContent(id: tabID, content: "one\nTWO\nthree\nfour")
+        fireScheduledSnapshot()
+        let newestID = TabVersion.makeID(tabID: tabID, text: "one\nTWO\nthree\nfour")
+        XCTAssertEqual(store.tabs.first { $0.id == tabID }?.headVersionID, newestID)
+        XCTAssertEqual(store.tabs.first { $0.id == tabID }?.pendingFastForwardID, parkedID)
+
+        clock.addTimeInterval(60)
+        syncVersions(of: tabID, from: versionStore, to: other.versions)
+        other.store.applyCloudTab(record(of: tabID, from: store))
+        let tabB = other.store.tabs.first { $0.id == tabID }!
+        XCTAssertEqual(tabB.content, "one\nTWO\nthree\nfour")
+        XCTAssertFalse(tabB.hasConflict)
+        XCTAssertNil(tabB.pendingFastForwardID)
+        XCTAssertEqual(store.tabs.first { $0.id == tabID }?.content, "one\nTWO\nthree\nfour")
+        let historyB = other.versions.versions(for: tabID).map(\.text)
+        XCTAssertTrue(historyB.contains("one\n2\nthree"))
+        XCTAssertTrue(historyB.contains("one\nTWO\nthree\nfour"))
+    }
+
+    /// B edits again before A's record arrives: the hint no longer matches
+    /// B's live text, so B conflicts in turn, keeps its text and offers A a
+    /// fast-forward from A's own text – which A takes.
+    func testFastForwardHintBouncesBackWhenTheReceiverEditedAgain() {
+        let tabID = newScratchTab()
+        let other = makeSameLineConflict(tabID: tabID)
+        defer { other.cleanUp() }
+        store.resolveConflict(id: tabID)
+
+        clock.addTimeInterval(60)
+        store.updateContent(id: tabID, content: "one\nTWO\nthree\nfour")
+        fireScheduledSnapshot()
+        other.store.updateContent(id: tabID, content: "one\n22\nthree")
+        fireScheduledSnapshot()
+        let textA2 = "one\nTWO\nthree\nfour"
+        let textB2 = "one\n22\nthree"
+
+        clock.addTimeInterval(60)
+        syncVersions(of: tabID, from: versionStore, to: other.versions)
+        other.store.applyCloudTab(record(of: tabID, from: store))
+        let tabB = other.store.tabs.first { $0.id == tabID }!
+        XCTAssertEqual(tabB.content, textB2)
+        XCTAssertTrue(tabB.hasConflict)
+        XCTAssertEqual(tabB.headVersionID, TabVersion.makeID(tabID: tabID, text: textB2))
+        XCTAssertEqual(tabB.pendingFastForwardID, TabVersion.makeID(tabID: tabID, text: textA2))
+        let parked = other.versions.version(withID: TabVersion.makeID(tabID: tabID, text: textA2))
+        XCTAssertEqual(parked?.device, "Test Mac")
+        XCTAssertEqual(parked?.label?.hasPrefix("Conflict – Test Mac"), true)
+
+        syncVersions(of: tabID, from: other.versions, to: versionStore)
+        store.applyCloudTab(record(of: tabID, from: other.store))
+        let tabA = store.tabs.first { $0.id == tabID }!
+        XCTAssertEqual(tabA.content, textB2)
+        XCTAssertFalse(tabA.hasConflict)
+        XCTAssertNil(tabA.pendingFastForwardID)
+        XCTAssertEqual(other.store.tabs.first { $0.id == tabID }?.content, textB2)
+    }
+
+    func testFastForwardHintClearsWhenTheOtherDeviceAcknowledges() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "local")
+        fireScheduledSnapshot()
+        store.applyCloudTab(cloudRecord(id: tabID, content: "remote"))
+        XCTAssertEqual(store.tabs.last?.pendingFastForwardID, TabVersion.makeID(tabID: tabID, text: "remote"))
+        changedIDs.removeAll()
+
+        store.applyCloudTab(cloudRecord(id: tabID, content: "local", head: TabVersion.makeID(tabID: tabID, text: "local")))
+        XCTAssertNil(store.tabs.last?.pendingFastForwardID)
+        XCTAssertEqual(changedIDs, [tabID])
+        XCTAssertEqual(store.tabs.last?.content, "local")
+    }
+
+    /// A kept-local conflict on A, then B adopts A's text and keeps typing
+    /// before A hears from it: B's head has moved on, so A drops its hint and
+    /// merges B's edit forward.
+    func testFastForwardHintClearsWhenTheOtherDeviceMovesOn() {
+        let tabID = newScratchTab()
+        let other = makeSameLineConflict(tabID: tabID)
+        defer { other.cleanUp() }
+        XCTAssertNotNil(store.tabs.first { $0.id == tabID }?.pendingFastForwardID)
+
+        syncVersions(of: tabID, from: versionStore, to: other.versions)
+        other.store.applyCloudTab(record(of: tabID, from: store))
+        XCTAssertEqual(other.store.tabs.first { $0.id == tabID }?.content, "one\nTWO\nthree")
+        clock.addTimeInterval(60)
+        other.store.updateContent(id: tabID, content: "one\nTWO\nthree\nfour")
+        fireScheduledSnapshot()
+        changedIDs.removeAll()
+
+        syncVersions(of: tabID, from: other.versions, to: versionStore)
+        store.applyCloudTab(record(of: tabID, from: other.store))
+        let tabA = store.tabs.first { $0.id == tabID }!
+        XCTAssertNil(tabA.pendingFastForwardID)
+        XCTAssertEqual(tabA.content, "one\nTWO\nthree\nfour")
+        XCTAssertTrue(changedIDs.contains(tabID))
+    }
+
+    func testSessionPersistsPendingFastForwardID() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "local")
+        fireScheduledSnapshot()
+        store.applyCloudTab(cloudRecord(id: tabID, content: "remote"))
+        store.saveSession()
+
+        let restored = makeStore()
+        let tab = restored.tabs.first { $0.id == tabID }
+        XCTAssertEqual(tab?.pendingFastForwardID, TabVersion.makeID(tabID: tabID, text: "remote"))
+        XCTAssertEqual(tab?.headVersionID, TabVersion.makeID(tabID: tabID, text: "local"))
+    }
+
+    func testRestoreClearsPendingFastForwardID() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "local")
+        fireScheduledSnapshot()
+        store.applyCloudTab(cloudRecord(id: tabID, content: "remote"))
+        let remoteVersion = versionStore.version(withID: TabVersion.makeID(tabID: tabID, text: "remote"))!
+        changedIDs.removeAll()
+
+        store.restoreVersion(id: tabID, version: remoteVersion)
+        XCTAssertNil(store.tabs.last?.pendingFastForwardID)
+        XCTAssertTrue(changedIDs.contains(tabID))
     }
 
     func testResolveConflictClearsFlagAndNotifies() {
@@ -887,6 +1096,7 @@ final class TabStoreTests: XCTestCase {
         """
         let tab = try JSONDecoder().decode(TabData.self, from: Data(json.utf8))
         XCTAssertNil(tab.headVersionID)
+        XCTAssertNil(tab.pendingFastForwardID)
         XCTAssertNil(tab.deletedAt)
         XCTAssertNil(tab.deletedOn)
         XCTAssertFalse(tab.hasConflict)
@@ -895,9 +1105,11 @@ final class TabStoreTests: XCTestCase {
     func testTabDataRoundTripsConflictFields() throws {
         var tab = TabData(name: "T", content: "c")
         tab.headVersionID = "head"
+        tab.pendingFastForwardID = "theirs"
         tab.hasConflict = true
         let decoded = try JSONDecoder().decode(TabData.self, from: JSONEncoder().encode(tab))
         XCTAssertEqual(decoded.headVersionID, "head")
+        XCTAssertEqual(decoded.pendingFastForwardID, "theirs")
         XCTAssertTrue(decoded.hasConflict)
     }
 

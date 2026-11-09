@@ -10,6 +10,7 @@ struct CloudTabRecord {
     var languageLocked: Bool
     var lastModified: Date
     var headVersionID: String? = nil
+    var fastForwardFromID: String? = nil
     var deletedAt: Date? = nil
     var deletedOn: String? = nil
 }
@@ -276,6 +277,7 @@ final class CloudSyncEngine: @unchecked Sendable {
         record["languageLocked"] = (tab.languageLocked ? 1 : 0) as CKRecordValue
         record["lastModified"] = tab.lastModified as CKRecordValue
         record["headVersionID"] = tab.headVersionID.map { $0 as CKRecordValue }
+        record["fastForwardFromID"] = tab.pendingFastForwardID.map { $0 as CKRecordValue }
         record["deletedAt"] = tab.deletedAt.map { $0 as CKRecordValue }
         record["deletedOn"] = tab.deletedOn.map { $0 as CKRecordValue }
     }
@@ -376,6 +378,7 @@ final class CloudSyncEngine: @unchecked Sendable {
             languageLocked: languageLocked,
             lastModified: lastModified,
             headVersionID: record["headVersionID"] as? String,
+            fastForwardFromID: record["fastForwardFromID"] as? String,
             deletedAt: record["deletedAt"] as? Date,
             deletedOn: record["deletedOn"] as? String
         )
