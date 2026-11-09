@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.19.0
+
+Features:
+- Version history (synced via iCloud) with diff view and restore – versions are saved automatically while you type and can be browsed, named and restored from File → Version history…
+- Format submenu in the Edit menu with markdown shortcuts for prose notes: Bold (⌘⇧B), Italic (⌘I), Strikethrough (⌘⇧X), Inline code (⌘⇧C), Heading (⌘⇧H) and Link (⌘K)
+- "On launch" setting in General: reopen the last tabs or start a new note
+- The fork now uses its own bundle identifier, team and iCloud container (com.justinc.itsypad)
+
+Fixes:
+- Turning the clipboard manager on or off in Settings takes effect immediately, without relaunching
+
 ## 1.18.0
 
 Features:
