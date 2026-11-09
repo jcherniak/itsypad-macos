@@ -90,6 +90,11 @@ class MenuBuilder {
         versionHistoryItem.target = target
         menu.addItem(versionHistoryItem)
 
+        let trashItem = NSMenuItem(title: String(localized: "menu.file.trash", defaultValue: "Trash…"), action: #selector(AppDelegate.showTrashAction), keyEquivalent: "")
+        trashItem.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+        trashItem.target = target
+        menu.addItem(trashItem)
+
         menu.addItem(.separator())
 
         let closeItem = NSMenuItem(title: String(localized: "menu.file.close_tab", defaultValue: "Close tab"), action: #selector(AppDelegate.closeTabAction), keyEquivalent: "w")

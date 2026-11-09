@@ -152,6 +152,26 @@ final class VersionStoreTests: XCTestCase {
         XCTAssertEqual(deleted, [a.id])
     }
 
+    func testDeleteRepointsChildrenToParentAndFiresChanged() {
+        let a = make("a")
+        let b = make("b", parent: a.id, at: now.addingTimeInterval(1))
+        let c = make("c", parent: b.id, at: now.addingTimeInterval(2))
+        store.append(a)
+        store.append(b)
+        store.append(c)
+        var changed: [String] = []
+        store.onVersionChanged = { changed.append($0.id) }
+        var deleted: [String] = []
+        store.onVersionDeleted = { deleted.append($0.id) }
+
+        store.delete(versionID: b.id, tabID: tabID)
+
+        XCTAssertEqual(store.version(withID: c.id)?.parentID, a.id)
+        XCTAssertEqual(changed, [c.id])
+        XCTAssertEqual(deleted, [b.id])
+        XCTAssertEqual(VersionStore(baseURL: baseURL).version(withID: c.id)?.parentID, a.id)
+    }
+
     func testDeleteAllRemovesFileAndFiresPerVersion() {
         store.append(make("a"))
         store.append(make("b"))

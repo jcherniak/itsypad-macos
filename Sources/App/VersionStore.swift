@@ -195,12 +195,32 @@ final class VersionStore: ObservableObject {
         onVersionChanged?(stored[index])
     }
 
+    /// Children of the deleted version are repointed to its parent so the
+    /// chain stays connected; they re-sync as changed records.
     func delete(versionID: String, tabID: UUID) {
         var stored = load(tabID)
         guard let index = stored.firstIndex(where: { $0.id == versionID }) else { return }
         let removed = stored.remove(at: index)
+        var repointed: [TabVersion] = []
+        for childIndex in stored.indices where stored[childIndex].parentID == versionID {
+            let child = stored[childIndex]
+            stored[childIndex] = TabVersion(
+                id: child.id,
+                tabID: child.tabID,
+                parentID: removed.parentID,
+                createdAt: child.createdAt,
+                device: child.device,
+                label: child.label,
+                text: child.text,
+                source: child.source
+            )
+            repointed.append(stored[childIndex])
+        }
         store(stored, for: tabID)
         onVersionDeleted?(removed)
+        for child in repointed {
+            onVersionChanged?(child)
+        }
     }
 
     func deleteAll(tabID: UUID) {
