@@ -85,6 +85,11 @@ class MenuBuilder {
         saveAsItem.keyEquivalentModifierMask = [.command, .shift]
         menu.addItem(saveAsItem)
 
+        let versionHistoryItem = NSMenuItem(title: String(localized: "menu.file.version_history", defaultValue: "Version history…"), action: #selector(AppDelegate.showVersionHistoryAction), keyEquivalent: "")
+        versionHistoryItem.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: nil)
+        versionHistoryItem.target = target
+        menu.addItem(versionHistoryItem)
+
         menu.addItem(.separator())
 
         let closeItem = NSMenuItem(title: String(localized: "menu.file.close_tab", defaultValue: "Close tab"), action: #selector(AppDelegate.closeTabAction), keyEquivalent: "w")

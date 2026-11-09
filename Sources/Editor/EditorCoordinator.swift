@@ -754,7 +754,7 @@ final class EditorCoordinator: BonsplitDelegate, @unchecked Sendable {
     // MARK: - Private helpers
 
     @MainActor
-    private func selectedTabStoreID() -> UUID? {
+    func selectedTabStoreID() -> UUID? {
         guard let focusedPaneId = controller.focusedPaneId,
               let selectedTab = controller.selectedTab(inPane: focusedPaneId),
               let tabStoreID = reverseMap[selectedTab.id] else { return nil }

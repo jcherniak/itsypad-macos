@@ -616,6 +616,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSTool
         editorCoordinator?.saveFileAs()
     }
 
+    @objc func showVersionHistoryAction() {
+        guard let window = editorWindow, let tabID = editorCoordinator?.selectedTabStoreID() else { return }
+        if !window.isVisible {
+            windowWasVisible = true
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            updateDockVisibility()
+        }
+        VersionHistorySheet.present(tabID: tabID, over: window)
+    }
+
     @objc func findAction(_ sender: NSMenuItem) {
         guard let textView = editorCoordinator?.activeTextView() else { return }
 
@@ -886,6 +897,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSTool
                 menuItem.state = .off
             }
             return isMarkdown
+        }
+        if menuItem.action == #selector(showVersionHistoryAction) {
+            return editorWindow?.attachedSheet == nil && editorCoordinator?.selectedTabStoreID() != nil
         }
         return true
     }
