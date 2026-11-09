@@ -23,6 +23,24 @@ final class ClipboardStoreTests: XCTestCase {
         super.tearDown()
     }
 
+    // MARK: - monitoring
+
+    func testStartAndStopMonitoringToggleIsMonitoring() {
+        XCTAssertFalse(store.isMonitoring)
+        store.startMonitoring()
+        XCTAssertTrue(store.isMonitoring)
+        store.stopMonitoring()
+        XCTAssertFalse(store.isMonitoring)
+    }
+
+    func testRestartMonitoringKeepsMonitoring() {
+        store.startMonitoring()
+        store.startMonitoring()
+        XCTAssertTrue(store.isMonitoring)
+        store.stopMonitoring()
+        XCTAssertFalse(store.isMonitoring)
+    }
+
     // MARK: - search
 
     func testSearchEmptyQueryReturnsAll() {
