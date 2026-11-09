@@ -58,7 +58,7 @@ extension TabData: Codable {
 }
 
 class TabStore: ObservableObject {
-    static let shared = TabStore()
+    static let shared = TabStore(launchBehavior: SettingsStore.shared.launchBehavior)
 
     @Published var tabs: [TabData] = []
     @Published var selectedTabID: UUID? {
@@ -90,7 +90,7 @@ class TabStore: ObservableObject {
         tabs.first { $0.id == selectedTabID }
     }
 
-    init(sessionURL: URL? = nil, versionStore: VersionStore = .shared) {
+    init(sessionURL: URL? = nil, versionStore: VersionStore = .shared, launchBehavior: LaunchBehavior = .reopenLast) {
         self.versionStore = versionStore
         if let sessionURL {
             self.sessionURL = sessionURL
@@ -113,6 +113,13 @@ class TabStore: ObservableObject {
             if isFirstLaunch {
                 addWelcomeTab()
             } else {
+                addNewTab()
+            }
+        } else if launchBehavior == .newNote, !isFirstLaunch {
+            let isBlankScratch = selectedTab.map {
+                $0.fileURL == nil && $0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            } ?? false
+            if !isBlankScratch {
                 addNewTab()
             }
         }

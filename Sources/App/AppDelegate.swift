@@ -167,13 +167,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSTool
             updateMarkdownToolbarItem(isMarkdown: isMarkdown, isPreviewing: false)
         }
 
-        if SettingsStore.shared.newTabOnLaunch {
-            let hasEmptyTab = TabStore.shared.tabs.contains { $0.content.isEmpty && $0.fileURL == nil }
-            if !hasEmptyTab {
-                editorCoordinator?.newTab()
-            }
-        }
-
         for url in pendingFileURLs {
             showWindowAndOpen(url: url)
         }
@@ -646,6 +639,41 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSTool
         editorCoordinator?.activeTextView()?.toggleChecklist()
     }
 
+    private var formattingTextView: EditorTextView? {
+        guard let textView = NSApp.keyWindow?.firstResponder as? EditorTextView,
+              textView.markdownFormattingAllowed else { return nil }
+        return textView
+    }
+
+    private static let formatActions: Set<Selector> = [
+        #selector(formatBoldAction), #selector(formatItalicAction), #selector(formatStrikethroughAction),
+        #selector(formatInlineCodeAction), #selector(formatHeadingAction), #selector(formatLinkAction),
+    ]
+
+    @objc func formatBoldAction() {
+        formattingTextView?.toggleBold()
+    }
+
+    @objc func formatItalicAction() {
+        formattingTextView?.toggleItalic()
+    }
+
+    @objc func formatStrikethroughAction() {
+        formattingTextView?.toggleStrikethrough()
+    }
+
+    @objc func formatInlineCodeAction() {
+        formattingTextView?.toggleInlineCode()
+    }
+
+    @objc func formatHeadingAction() {
+        formattingTextView?.toggleHeading()
+    }
+
+    @objc func formatLinkAction() {
+        formattingTextView?.insertLink()
+    }
+
     @objc func indentAction() {
         editorCoordinator?.activeTextView()?.indentLines()
     }
@@ -877,6 +905,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSTool
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if let action = menuItem.action, Self.formatActions.contains(action) {
+            return formattingTextView != nil
+        }
         if menuItem.action == #selector(toggleLineNumbers) {
             menuItem.state = SettingsStore.shared.showLineNumbers ? .on : .off
         }

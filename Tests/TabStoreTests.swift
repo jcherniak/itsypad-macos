@@ -675,4 +675,68 @@ final class TabStoreTests: XCTestCase {
     func testSessionPersistenceLayoutNilByDefault() {
         XCTAssertNil(store.currentLayout)
     }
+
+    // MARK: - Launch behaviour
+
+    private func writeSession(_ tabs: [TabData], selected: UUID?) {
+        let data = try! JSONEncoder().encode(SessionData(tabs: tabs, selectedTabID: selected))
+        try! data.write(to: tempURL)
+    }
+
+    func testNewNoteLaunchAddsTabWhenSelectedTabHasContent() {
+        let existing = TabData(name: "Notes", content: "some text")
+        writeSession([existing], selected: existing.id)
+
+        let restored = TabStore(sessionURL: tempURL, launchBehavior: .newNote)
+        XCTAssertEqual(restored.tabs.count, 2)
+        XCTAssertEqual(restored.tabs.first?.id, existing.id)
+        XCTAssertNotEqual(restored.selectedTabID, existing.id)
+        XCTAssertEqual(restored.selectedTab?.content, "")
+    }
+
+    func testNewNoteLaunchReusesBlankSelectedTab() {
+        let blank = TabData(content: "  \n ")
+        writeSession([blank], selected: blank.id)
+
+        let restored = TabStore(sessionURL: tempURL, launchBehavior: .newNote)
+        XCTAssertEqual(restored.tabs.count, 1)
+        XCTAssertEqual(restored.selectedTabID, blank.id)
+    }
+
+    func testNewNoteLaunchAddsTabWhenSelectedBlankTabHasFile() {
+        let file = TabData(name: "a.txt", content: "", fileURL: URL(fileURLWithPath: "/tmp/a.txt"))
+        writeSession([file], selected: file.id)
+
+        let restored = TabStore(sessionURL: tempURL, launchBehavior: .newNote)
+        XCTAssertEqual(restored.tabs.count, 2)
+        XCTAssertNotEqual(restored.selectedTabID, file.id)
+    }
+
+    func testNewNoteLaunchWithEmptySessionAddsSingleTab() {
+        writeSession([], selected: nil)
+
+        let restored = TabStore(sessionURL: tempURL, launchBehavior: .newNote)
+        XCTAssertEqual(restored.tabs.count, 1)
+        XCTAssertEqual(restored.selectedTab?.content, "")
+    }
+
+    func testNewNoteLaunchDoesNothingOnFirstLaunch() {
+        let fresh = TabStore(
+            sessionURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("json"),
+            launchBehavior: .newNote
+        )
+        XCTAssertEqual(fresh.tabs.count, 1)
+        XCTAssertEqual(fresh.tabs.first?.name, "Welcome to Itsypad")
+    }
+
+    func testReopenLastLaunchKeepsRestoredSelection() {
+        let existing = TabData(name: "Notes", content: "some text")
+        writeSession([existing], selected: existing.id)
+
+        let restored = TabStore(sessionURL: tempURL, launchBehavior: .reopenLast)
+        XCTAssertEqual(restored.tabs.count, 1)
+        XCTAssertEqual(restored.selectedTabID, existing.id)
+    }
 }

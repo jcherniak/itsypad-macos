@@ -180,6 +180,28 @@ class MenuBuilder {
         findMenuItem.submenu = findMenu
         menu.addItem(findMenuItem)
 
+        let formatMenu = NSMenu(title: String(localized: "menu.edit.format", defaultValue: "Format"))
+        let formatItems: [(String, String, Selector, String, NSEvent.ModifierFlags)] = [
+            (String(localized: "menu.edit.bold", defaultValue: "Bold"), "bold", #selector(AppDelegate.formatBoldAction), "b", [.command, .shift]),
+            (String(localized: "menu.edit.italic", defaultValue: "Italic"), "italic", #selector(AppDelegate.formatItalicAction), "i", [.command]),
+            (String(localized: "menu.edit.strikethrough", defaultValue: "Strikethrough"), "strikethrough", #selector(AppDelegate.formatStrikethroughAction), "x", [.command, .shift]),
+            (String(localized: "menu.edit.inline_code", defaultValue: "Inline code"), "chevron.left.forwardslash.chevron.right", #selector(AppDelegate.formatInlineCodeAction), "c", [.command, .shift]),
+            (String(localized: "menu.edit.heading", defaultValue: "Heading"), "number", #selector(AppDelegate.formatHeadingAction), "h", [.command, .shift]),
+            (String(localized: "menu.edit.link", defaultValue: "Link"), "link", #selector(AppDelegate.formatLinkAction), "k", [.command]),
+        ]
+        for (title, symbol, action, key, modifiers) in formatItems {
+            let formatItem = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            formatItem.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            formatItem.keyEquivalentModifierMask = modifiers
+            formatItem.target = target
+            formatMenu.addItem(formatItem)
+        }
+
+        let formatMenuItem = NSMenuItem(title: String(localized: "menu.edit.format", defaultValue: "Format"), action: nil, keyEquivalent: "")
+        formatMenuItem.image = NSImage(systemSymbolName: "textformat", accessibilityDescription: nil)
+        formatMenuItem.submenu = formatMenu
+        menu.addItem(formatMenuItem)
+
         menu.addItem(.separator())
 
         let toggleChecklistItem = NSMenuItem(title: String(localized: "menu.edit.toggle_checklist", defaultValue: "Toggle checklist"), action: #selector(AppDelegate.toggleChecklistAction), keyEquivalent: "l")

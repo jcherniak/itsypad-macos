@@ -674,4 +674,41 @@ final class EditorTextView: NSTextView {
             setSelectedRange(NSRange(location: newCursorPos, length: sel.length))
         }
     }
+
+    // MARK: - Markdown formatting
+
+    var markdownFormattingAllowed: Bool { listsAllowed }
+
+    func toggleBold() {
+        applyMarkdownEdit(MarkdownShortcuts.wrap(text: string, selection: selectedRange(), marker: MarkdownShortcuts.boldMarker))
+    }
+
+    func toggleItalic() {
+        applyMarkdownEdit(MarkdownShortcuts.wrap(text: string, selection: selectedRange(), marker: MarkdownShortcuts.italicMarker))
+    }
+
+    func toggleStrikethrough() {
+        applyMarkdownEdit(MarkdownShortcuts.wrap(text: string, selection: selectedRange(), marker: MarkdownShortcuts.strikethroughMarker))
+    }
+
+    func toggleInlineCode() {
+        applyMarkdownEdit(MarkdownShortcuts.wrap(text: string, selection: selectedRange(), marker: MarkdownShortcuts.inlineCodeMarker))
+    }
+
+    func toggleHeading() {
+        applyMarkdownEdit(MarkdownShortcuts.toggleHeading(text: string, selection: selectedRange()))
+    }
+
+    func insertLink() {
+        applyMarkdownEdit(MarkdownShortcuts.insertLink(text: string, selection: selectedRange()))
+    }
+
+    func applyMarkdownEdit(_ edit: MarkdownShortcuts.Edit) {
+        guard markdownFormattingAllowed else { return }
+        if shouldChangeText(in: edit.range, replacementString: edit.replacement) {
+            textStorage?.replaceCharacters(in: edit.range, with: edit.replacement)
+            didChangeText()
+            setSelectedRange(edit.selection)
+        }
+    }
 }
