@@ -19,6 +19,7 @@ struct TabItem: Identifiable, Hashable, Codable {
     var title: String
     var icon: String?
     var isDirty: Bool
+    var hasConflict: Bool
     var isClosable: Bool
     var isPinned: Bool
 
@@ -27,6 +28,7 @@ struct TabItem: Identifiable, Hashable, Codable {
         title: String,
         icon: String? = "doc.text",
         isDirty: Bool = false,
+        hasConflict: Bool = false,
         isClosable: Bool = true,
         isPinned: Bool = false
     ) {
@@ -34,6 +36,7 @@ struct TabItem: Identifiable, Hashable, Codable {
         self.title = title
         self.icon = icon
         self.isDirty = isDirty
+        self.hasConflict = hasConflict
         self.isClosable = isClosable
         self.isPinned = isPinned
     }

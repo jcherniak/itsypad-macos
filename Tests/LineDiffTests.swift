@@ -75,4 +75,55 @@ final class LineDiffTests: XCTestCase {
         XCTAssertEqual(result.filter { $0.kind == .added }.count, 2)
         XCTAssertTrue(result.allSatisfy { $0.kind != .same })
     }
+
+    // MARK: - merge3
+
+    func testMerge3AppliesEditsInDifferentRegions() {
+        let base = "one\ntwo\nthree\nfour\nfive"
+        let ours = "ONE\ntwo\nthree\nfour\nfive"
+        let theirs = "one\ntwo\nthree\nfour\nFIVE"
+        XCTAssertEqual(LineDiff.merge3(base: base, ours: ours, theirs: theirs), .clean("ONE\ntwo\nthree\nfour\nFIVE"))
+        XCTAssertEqual(LineDiff.merge3(base: base, ours: theirs, theirs: ours), .clean("ONE\ntwo\nthree\nfour\nFIVE"))
+    }
+
+    func testMerge3InsertionAndDeletionInDifferentRegions() {
+        let base = "a\nb\nc\nd\ne"
+        let ours = "a\nb\nc\nd\ne\nf"
+        let theirs = "b\nc\nd\ne"
+        XCTAssertEqual(LineDiff.merge3(base: base, ours: ours, theirs: theirs), .clean("b\nc\nd\ne\nf"))
+    }
+
+    func testMerge3ConflictsOnSameLines() {
+        let base = "a\nb\nc"
+        XCTAssertEqual(LineDiff.merge3(base: base, ours: "a\nB\nc", theirs: "a\nX\nc"), .conflicted)
+        XCTAssertEqual(LineDiff.merge3(base: base, ours: "a\nc", theirs: "a\nX\nc"), .conflicted)
+        XCTAssertEqual(LineDiff.merge3(base: base, ours: "a\nb\nnew\nc", theirs: "a\nb\nother\nc"), .conflicted)
+    }
+
+    func testMerge3IdenticalSidesAreClean() {
+        let base = "a\nb\nc"
+        XCTAssertEqual(LineDiff.merge3(base: base, ours: "x\ny", theirs: "x\ny"), .clean("x\ny"))
+        XCTAssertEqual(LineDiff.merge3(base: base, ours: base, theirs: base), .clean(base))
+    }
+
+    func testMerge3OneSideUnchangedTakesTheOther() {
+        let base = "a\nb\nc"
+        XCTAssertEqual(LineDiff.merge3(base: base, ours: base, theirs: "a\nB\nc"), .clean("a\nB\nc"))
+        XCTAssertEqual(LineDiff.merge3(base: base, ours: "a\nB\nc", theirs: base), .clean("a\nB\nc"))
+        XCTAssertEqual(LineDiff.merge3(base: base, ours: base, theirs: ""), .clean(""))
+    }
+
+    func testMerge3SameChangeOnBothSidesAppliesOnce() {
+        let base = "a\nb\nc\nd"
+        XCTAssertEqual(LineDiff.merge3(base: base, ours: "a\nB\nc\nd", theirs: "a\nB\nc\nD"), .clean("a\nB\nc\nD"))
+    }
+
+    func testMerge3KeepsTrailingNewline() {
+        XCTAssertEqual(LineDiff.merge3(base: "a\nb\nc\n", ours: "A\nb\nc\n", theirs: "a\nb\nC\n"), .clean("A\nb\nC\n"))
+        XCTAssertEqual(LineDiff.merge3(base: "a\nb\nc", ours: "A\nb\nc", theirs: "a\nb\nC"), .clean("A\nb\nC"))
+    }
+
+    func testMerge3AdjacentEditsConflict() {
+        XCTAssertEqual(LineDiff.merge3(base: "a\nb\n", ours: "A\nb\n", theirs: "a\nB\n"), .conflicted)
+    }
 }

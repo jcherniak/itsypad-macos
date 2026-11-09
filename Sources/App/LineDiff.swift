@@ -7,6 +7,11 @@ enum LineDiff {
         let text: String
     }
 
+    enum Merge3Result: Equatable {
+        case clean(String)
+        case conflicted
+    }
+
     /// Beyond this many lines on either side the quadratic LCS is skipped and
     /// the result degrades to "everything removed, everything added".
     static let maxLines = 5000
@@ -38,6 +43,63 @@ enum LineDiff {
         return result
     }
 
+    /// Line-level three-way merge. Each side's hunks against `base` are
+    /// applied when they touch different base lines. Hunks that overlap or
+    /// abut are taken once when both sides made the same change and make
+    /// the whole merge `.conflicted` otherwise.
+    static func merge3(base: String, ours: String, theirs: String) -> Merge3Result {
+        if ours == theirs { return .clean(ours) }
+        if ours == base { return .clean(theirs) }
+        if theirs == base { return .clean(ours) }
+
+        let baseLines = lines(base)
+        if baseLines.count > maxLines || lines(ours).count > maxLines || lines(theirs).count > maxLines {
+            return .conflicted
+        }
+
+        let oursHunks = hunks(base: base, side: ours)
+        let theirsHunks = hunks(base: base, side: theirs)
+
+        var merged: [Hunk] = []
+        var i = 0
+        var j = 0
+        while i < oursHunks.count && j < theirsHunks.count {
+            let a = oursHunks[i]
+            let b = theirsHunks[j]
+            if a.touches(b) {
+                guard a == b else { return .conflicted }
+                merged.append(a)
+                i += 1
+                j += 1
+            } else if a.range.lowerBound < b.range.lowerBound {
+                merged.append(a)
+                i += 1
+            } else {
+                merged.append(b)
+                j += 1
+            }
+        }
+        merged += oursHunks[i...]
+        merged += theirsHunks[j...]
+
+        var out: [String] = []
+        var cursor = 0
+        for hunk in merged {
+            out += baseLines[cursor..<hunk.range.lowerBound]
+            out += hunk.replacement
+            cursor = hunk.range.upperBound
+        }
+        out += baseLines[cursor...]
+
+        var text = out.joined(separator: "\n")
+        let oursChangedTrailing = ours.hasSuffix("\n") != base.hasSuffix("\n")
+        let trailing = oursChangedTrailing ? ours.hasSuffix("\n") : theirs.hasSuffix("\n")
+        if trailing && !out.isEmpty {
+            text += "\n"
+        }
+        return .clean(text)
+    }
+
     /// A trailing newline terminates the last line rather than starting an
     /// empty one, so "a\n" and "a" both yield ["a"].
     static func lines(_ text: String) -> [String] {
@@ -47,6 +109,46 @@ enum LineDiff {
             parts.removeLast()
         }
         return parts
+    }
+
+    /// A run of changed lines: `range` is the replaced span of base lines
+    /// (empty for a pure insertion) and `replacement` what the side has there.
+    private struct Hunk: Equatable {
+        var range: Range<Int>
+        var replacement: [String]
+
+        func touches(_ other: Hunk) -> Bool {
+            range.lowerBound <= other.range.upperBound && other.range.lowerBound <= range.upperBound
+        }
+    }
+
+    private static func hunks(base: String, side: String) -> [Hunk] {
+        var result: [Hunk] = []
+        var open: Hunk?
+        var index = 0
+        for line in diff(old: base, new: side) {
+            switch line.kind {
+            case .same:
+                if let hunk = open {
+                    result.append(hunk)
+                    open = nil
+                }
+                index += 1
+            case .removed:
+                var hunk = open ?? Hunk(range: index..<index, replacement: [])
+                hunk.range = hunk.range.lowerBound..<(index + 1)
+                open = hunk
+                index += 1
+            case .added:
+                var hunk = open ?? Hunk(range: index..<index, replacement: [])
+                hunk.replacement.append(line.text)
+                open = hunk
+            }
+        }
+        if let hunk = open {
+            result.append(hunk)
+        }
+        return result
     }
 
     private static func lcsDiff(_ a: [String], _ b: [String]) -> [Line] {

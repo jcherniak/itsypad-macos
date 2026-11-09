@@ -37,6 +37,7 @@ struct SessionRestorer {
                 title: tab.name,
                 icon: nil,
                 isDirty: tab.isDirty,
+                hasConflict: tab.hasConflict,
                 isPinned: tab.isPinned
             ) {
                 tabIDMap[tab.id] = bonsplitTabID
@@ -73,6 +74,7 @@ struct SessionRestorer {
                 title: tab.name,
                 icon: nil,
                 isDirty: tab.isDirty,
+                hasConflict: tab.hasConflict,
                 isPinned: tab.isPinned
             ) {
                 tabIDMap[tab.id] = bonsplitTabID
@@ -120,6 +122,7 @@ struct SessionRestorer {
                     title: tab.name,
                     icon: nil,
                     isDirty: tab.isDirty,
+                    hasConflict: tab.hasConflict,
                     isPinned: tab.isPinned,
                     inPane: pane
                 ) {
