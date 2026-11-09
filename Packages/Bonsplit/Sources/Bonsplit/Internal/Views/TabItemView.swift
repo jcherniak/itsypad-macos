@@ -94,7 +94,7 @@ struct TabItemView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(tab.title)
-        .accessibilityValue(tab.isDirty ? "Modified" : "")
+        .accessibilityValue(tab.hasConflict ? "Sync conflict" : tab.isDirty ? "Modified" : "")
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }
 
@@ -137,8 +137,12 @@ struct TabItemView: View {
     @ViewBuilder
     private var closeOrDirtyIndicator: some View {
         ZStack {
-            // Dirty indicator (shown when dirty and not hovering)
-            if tab.isDirty && !isHovered && !isCloseHovered {
+            // Conflict badge or dirty indicator (shown when not hovering)
+            if tab.hasConflict && !isHovered && !isCloseHovered {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: TabBarMetrics.closeIconSize, weight: .semibold))
+                    .foregroundStyle(Color.orange)
+            } else if tab.isDirty && !isHovered && !isCloseHovered {
                 Circle()
                     .fill(TabBarColors.dirtyIndicator)
                     .frame(width: TabBarMetrics.dirtyIndicatorSize, height: TabBarMetrics.dirtyIndicatorSize)

@@ -133,6 +133,12 @@ struct VersionHistoryView: View {
                 namingVersionID = version.id
             }
             .disabled(selectedVersion == nil)
+            if tab?.hasConflict == true {
+                Button(String(localized: "history.resolve", defaultValue: "Resolve")) {
+                    tabStore.resolveConflict(id: tabID)
+                }
+                .help(String(localized: "history.resolve.help", defaultValue: "Clear the sync conflict badge – both texts stay in the history"))
+            }
             Spacer()
             Button(String(localized: "history.close", defaultValue: "Close")) {
                 onClose()

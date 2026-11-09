@@ -323,7 +323,7 @@ final class TabStoreTests: XCTestCase {
     }
 
     func testApplyCloudTabUpdatesExistingTab() {
-        let existingID = store.tabs.first!.id
+        let existingID = newScratchTab()
         let record = CloudTabRecord(
             id: existingID,
             name: "Updated",
@@ -334,10 +334,10 @@ final class TabStoreTests: XCTestCase {
         )
         store.applyCloudTab(record)
 
-        XCTAssertEqual(store.tabs.first?.content, "updated content")
-        XCTAssertEqual(store.tabs.first?.name, "Updated")
-        XCTAssertEqual(store.tabs.first?.language, "swift")
-        XCTAssertTrue(store.tabs.first!.languageLocked)
+        XCTAssertEqual(store.tabs.last?.content, "updated content")
+        XCTAssertEqual(store.tabs.last?.name, "Updated")
+        XCTAssertEqual(store.tabs.last?.language, "swift")
+        XCTAssertTrue(store.tabs.last!.languageLocked)
     }
 
     func testApplyCloudTabSkipsOlderVersion() {
@@ -522,24 +522,233 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(versionStore.versions(for: tabID).map(\.text), ["pasted again", "pasted"])
     }
 
-    func testCloudOverwriteSnapshotsLocalTextAsConflict() {
-        let tabID = newScratchTab()
-        store.updateContent(id: tabID, content: "local draft")
-        let record = CloudTabRecord(
-            id: tabID,
-            name: "Remote",
-            content: "remote text",
+    private func cloudRecord(id: UUID, content: String, head: String? = nil, name: String = "Remote") -> CloudTabRecord {
+        CloudTabRecord(
+            id: id,
+            name: name,
+            content: content,
             language: "plain",
             languageLocked: false,
-            lastModified: Date().addingTimeInterval(60)
+            lastModified: Date().addingTimeInterval(60),
+            headVersionID: head
         )
-        store.applyCloudTab(record)
-        XCTAssertEqual(store.tabs.last?.content, "remote text")
+    }
+
+    func testCloudConflictKeepsLocalTextAndParksRemoteInHistory() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "local draft")
+        store.applyCloudTab(cloudRecord(id: tabID, content: "remote text"))
+
+        XCTAssertEqual(store.tabs.last?.content, "local draft")
+        XCTAssertEqual(store.tabs.last?.name, "local draft")
+        XCTAssertTrue(store.tabs.last!.hasConflict)
         let versions = versionStore.versions(for: tabID)
-        XCTAssertEqual(versions.map(\.text), ["local draft"])
-        XCTAssertEqual(versions.first?.source, .conflict)
+        XCTAssertEqual(versions.map(\.text), ["remote text", "local draft"])
+        XCTAssertEqual(versions.map(\.source), [.conflict, .conflict])
+        XCTAssertEqual(versions[0].device, "iCloud")
+        XCTAssertEqual(versions[0].label, "Conflict – another device \(clock.formatted(date: .omitted, time: .shortened))")
+        XCTAssertEqual(versions[0].parentID, versions[1].id)
+        XCTAssertNil(versions[1].label)
+        XCTAssertEqual(store.tabs.last?.headVersionID, versions[0].id)
         fireScheduledSnapshot()
+        XCTAssertEqual(versionStore.versions(for: tabID).count, 2)
+    }
+
+    func testCloudConflictOnOverlappingEditsNamesTheRemoteDevice() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "one\ntwo\nthree")
+        fireScheduledSnapshot()
+        let baseID = versionStore.latest(for: tabID)!.id
+        clock.addTimeInterval(60)
+        store.updateContent(id: tabID, content: "one\nTWO\nthree")
+        clock.addTimeInterval(60)
+        store.applyCloudTab(cloudRecord(id: tabID, content: "one\n2\nthree", head: baseID))
+
+        XCTAssertEqual(store.tabs.last?.content, "one\nTWO\nthree")
+        XCTAssertTrue(store.tabs.last!.hasConflict)
+        let versions = versionStore.versions(for: tabID)
+        XCTAssertEqual(versions.map(\.text), ["one\n2\nthree", "one\nTWO\nthree", "one\ntwo\nthree"])
+        XCTAssertEqual(versions[0].source, .conflict)
+        XCTAssertEqual(versions[0].device, "Test Mac")
+        XCTAssertTrue(versions[0].label?.hasPrefix("Conflict – Test Mac ") == true)
+        XCTAssertEqual(versions[0].parentID, baseID)
+        XCTAssertEqual(versions[1].source, .conflict)
+        XCTAssertEqual(versions[1].parentID, baseID)
+    }
+
+    func testCloudFastForwardAppliesRemoteText() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "shared text")
+        fireScheduledSnapshot()
+        let localID = versionStore.latest(for: tabID)!.id
+        XCTAssertEqual(store.tabs.last?.headVersionID, localID)
+        clock.addTimeInterval(60)
+        store.applyCloudTab(cloudRecord(id: tabID, content: "shared text plus more", head: localID, name: "Shared"))
+
+        XCTAssertEqual(store.tabs.last?.content, "shared text plus more")
+        XCTAssertEqual(store.tabs.last?.name, "Shared")
+        XCTAssertFalse(store.tabs.last!.hasConflict)
+        let versions = versionStore.versions(for: tabID)
+        XCTAssertEqual(versions.map(\.text), ["shared text plus more", "shared text"])
+        XCTAssertEqual(versions[0].source, .edit)
+        XCTAssertEqual(versions[0].device, "Test Mac")
+        XCTAssertEqual(versions[0].parentID, localID)
+        XCTAssertEqual(store.tabs.last?.headVersionID, versions[0].id)
+    }
+
+    func testCloudFastForwardSnapshotsPendingLocalTextFirst() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "first")
+        fireScheduledSnapshot()
+        clock.addTimeInterval(60)
+        store.updateContent(id: tabID, content: "first, then typed")
+        let pendingID = TabVersion.makeID(tabID: tabID, text: "first, then typed")
+        store.applyCloudTab(cloudRecord(id: tabID, content: "first, then typed, then remote", head: pendingID))
+
+        XCTAssertEqual(store.tabs.last?.content, "first, then typed, then remote")
+        XCTAssertEqual(versionStore.versions(for: tabID).map(\.text), ["first, then typed, then remote", "first, then typed", "first"])
+    }
+
+    func testCloudMergeCombinesNonOverlappingEdits() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "one\ntwo\nthree")
+        fireScheduledSnapshot()
+        let baseID = versionStore.latest(for: tabID)!.id
+        clock.addTimeInterval(60)
+        store.updateContent(id: tabID, content: "ONE\ntwo\nthree")
+        clock.addTimeInterval(60)
+        store.applyCloudTab(cloudRecord(id: tabID, content: "one\ntwo\nTHREE", head: baseID))
+
+        XCTAssertEqual(store.tabs.last?.content, "ONE\ntwo\nTHREE")
+        XCTAssertEqual(store.tabs.last?.name, "ONE")
+        XCTAssertFalse(store.tabs.last!.hasConflict)
+        let versions = versionStore.versions(for: tabID)
+        XCTAssertEqual(versions.map(\.text), ["ONE\ntwo\nTHREE", "ONE\ntwo\nthree", "one\ntwo\nthree"])
+        XCTAssertEqual(versions[0].source, .edit)
+        XCTAssertEqual(versions[0].device, "Test Mac")
+        XCTAssertEqual(versions[1].source, .conflict)
+        XCTAssertEqual(store.tabs.last?.headVersionID, versions[0].id)
+    }
+
+    func testCloudMergeUsesCommonAncestorWhenRemoteHeadIsSyncedDown() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "one\ntwo\nthree")
+        fireScheduledSnapshot()
+        let baseID = versionStore.latest(for: tabID)!.id
+        clock.addTimeInterval(60)
+        store.updateContent(id: tabID, content: "ONE\ntwo\nthree")
+        // The other device's own version arrives before its tab record.
+        let remoteHead = TabVersion(
+            tabID: tabID,
+            parentID: baseID,
+            createdAt: clock.addingTimeInterval(30),
+            device: "iPhone",
+            text: "one\ntwo\nTHREE",
+            source: .edit
+        )
+        versionStore.applyCloud(remoteHead)
+        clock.addTimeInterval(60)
+        store.applyCloudTab(cloudRecord(id: tabID, content: "one\ntwo\nTHREE", head: remoteHead.id))
+
+        XCTAssertEqual(store.tabs.last?.content, "ONE\ntwo\nTHREE")
+        XCTAssertFalse(store.tabs.last!.hasConflict)
+    }
+
+    func testCloudMergeNeverDropsUnsnapshottedLocalText() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "typed but not yet saved")
+        store.applyCloudTab(cloudRecord(id: tabID, content: "remote text"))
+
+        XCTAssertTrue(versionStore.versions(for: tabID).map(\.text).contains("typed but not yet saved"))
+        fireScheduledSnapshot()
+        XCTAssertEqual(versionStore.versions(for: tabID).count, 2)
+    }
+
+    func testCloudEmptyFreshTabAdoptsRemoteText() {
+        let tabID = newScratchTab()
+        store.applyCloudTab(cloudRecord(id: tabID, content: "remote text", name: "Remote"))
+
+        XCTAssertEqual(store.tabs.last?.content, "remote text")
+        XCTAssertEqual(store.tabs.last?.name, "Remote")
+        XCTAssertFalse(store.tabs.last!.hasConflict)
+        let versions = versionStore.versions(for: tabID)
+        XCTAssertEqual(versions.map(\.text), ["remote text"])
+        XCTAssertEqual(versions[0].source, .edit)
+        XCTAssertNil(versions[0].parentID)
+    }
+
+    func testCloudMetadataOnlyUpdateAppliesWithoutTouchingHistory() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "same text")
+        fireScheduledSnapshot()
+        var record = cloudRecord(id: tabID, content: "same text", name: "Renamed")
+        record.language = "swift"
+        record.languageLocked = true
+        store.applyCloudTab(record)
+
+        XCTAssertEqual(store.tabs.last?.name, "Renamed")
+        XCTAssertEqual(store.tabs.last?.language, "swift")
+        XCTAssertTrue(store.tabs.last!.languageLocked)
         XCTAssertEqual(versionStore.versions(for: tabID).count, 1)
+    }
+
+    func testResolveConflictClearsFlagAndNotifies() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "local")
+        store.applyCloudTab(cloudRecord(id: tabID, content: "remote"))
+        XCTAssertTrue(store.tabs.last!.hasConflict)
+
+        let expectation = expectation(forNotification: TabStore.cloudTabsMerged, object: store) { notification in
+            let result = notification.userInfo?["result"] as? TabStore.CloudMergeResult
+            return result?.flaggedTabIDs == [tabID] && result?.updatedTabIDs.isEmpty == true
+        }
+        store.resolveConflict(id: tabID)
+        wait(for: [expectation], timeout: 1)
+        XCTAssertFalse(store.tabs.last!.hasConflict)
+    }
+
+    func testRestoreClearsConflict() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "local")
+        store.applyCloudTab(cloudRecord(id: tabID, content: "remote"))
+        let remoteVersion = versionStore.versions(for: tabID).first { $0.text == "remote" }!
+        store.restoreVersion(id: tabID, version: remoteVersion)
+
+        XCTAssertEqual(store.tabs.last?.content, "remote")
+        XCTAssertFalse(store.tabs.last!.hasConflict)
+    }
+
+    func testTabDataDecodesSessionsWithoutConflictFields() throws {
+        let json = """
+        {"id":"\(UUID().uuidString)","name":"Old","content":"text","language":"plain","languageLocked":false,"cursorPosition":0}
+        """
+        let tab = try JSONDecoder().decode(TabData.self, from: Data(json.utf8))
+        XCTAssertNil(tab.headVersionID)
+        XCTAssertNil(tab.deletedAt)
+        XCTAssertNil(tab.deletedOn)
+        XCTAssertFalse(tab.hasConflict)
+    }
+
+    func testTabDataRoundTripsConflictFields() throws {
+        var tab = TabData(name: "T", content: "c")
+        tab.headVersionID = "head"
+        tab.hasConflict = true
+        let decoded = try JSONDecoder().decode(TabData.self, from: JSONEncoder().encode(tab))
+        XCTAssertEqual(decoded.headVersionID, "head")
+        XCTAssertTrue(decoded.hasConflict)
+    }
+
+    func testSessionPersistsHeadVersionIDAndConflict() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "local")
+        fireScheduledSnapshot()
+        store.applyCloudTab(cloudRecord(id: tabID, content: "remote"))
+        store.saveSession()
+
+        let restored = makeStore()
+        let tab = restored.tabs.first { $0.id == tabID }
+        XCTAssertEqual(tab?.headVersionID, store.tabs.last?.headVersionID)
+        XCTAssertEqual(tab?.hasConflict, true)
     }
 
     func testRestoreAppendsRestoreVersionAndSetsContent() {

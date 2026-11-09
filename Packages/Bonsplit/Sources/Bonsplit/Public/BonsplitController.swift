@@ -35,6 +35,7 @@ public final class BonsplitController {
     ///   - title: The tab title
     ///   - icon: Optional SF Symbol name for the tab icon
     ///   - isDirty: Whether the tab shows a dirty indicator
+    ///   - hasConflict: Whether the tab shows a sync conflict badge
     ///   - pane: Optional pane to add the tab to (defaults to focused pane)
     /// - Returns: The TabID of the created tab, or nil if creation was vetoed by delegate
     @discardableResult
@@ -42,12 +43,13 @@ public final class BonsplitController {
         title: String,
         icon: String? = "doc.text",
         isDirty: Bool = false,
+        hasConflict: Bool = false,
         isClosable: Bool = true,
         isPinned: Bool = false,
         inPane pane: PaneID? = nil
     ) -> TabID? {
         let tabId = TabID()
-        let tab = Tab(id: tabId, title: title, icon: icon, isDirty: isDirty, isClosable: isClosable, isPinned: isPinned)
+        let tab = Tab(id: tabId, title: title, icon: icon, isDirty: isDirty, hasConflict: hasConflict, isClosable: isClosable, isPinned: isPinned)
         let targetPane = pane ?? focusedPaneId ?? PaneID(id: internalController.rootNode.allPaneIds.first!.id)
 
         // Check with delegate
@@ -85,7 +87,7 @@ public final class BonsplitController {
         }
 
         // Create internal TabItem
-        let tabItem = TabItem(id: tabId.id, title: title, icon: icon, isDirty: isDirty, isClosable: isClosable, isPinned: isPinned)
+        let tabItem = TabItem(id: tabId.id, title: title, icon: icon, isDirty: isDirty, hasConflict: hasConflict, isClosable: isClosable, isPinned: isPinned)
         internalController.addTab(tabItem, toPane: PaneID(id: targetPane.id), atIndex: insertIndex)
 
         // Notify delegate
@@ -100,11 +102,13 @@ public final class BonsplitController {
     ///   - title: New title (pass nil to keep current)
     ///   - icon: New icon (pass nil to keep current, pass .some(nil) to remove icon)
     ///   - isDirty: New dirty state (pass nil to keep current)
+    ///   - hasConflict: New sync conflict state (pass nil to keep current)
     public func updateTab(
         _ tabId: TabID,
         title: String? = nil,
         icon: String?? = nil,
         isDirty: Bool? = nil,
+        hasConflict: Bool? = nil,
         isPinned: Bool? = nil
     ) {
         guard let (pane, tabIndex) = findTabInternal(tabId) else { return }
@@ -118,6 +122,9 @@ public final class BonsplitController {
         }
         if let isDirty = isDirty, pane.tabs[tabIndex].isDirty != isDirty {
             pane.tabs[tabIndex].isDirty = isDirty
+        }
+        if let hasConflict = hasConflict, pane.tabs[tabIndex].hasConflict != hasConflict {
+            pane.tabs[tabIndex].hasConflict = hasConflict
         }
         if let isPinned = isPinned, pane.tabs[tabIndex].isPinned != isPinned {
             pane.tabs[tabIndex].isPinned = isPinned
@@ -229,7 +236,7 @@ public final class BonsplitController {
 
         let internalTab: TabItem?
         if let tab {
-            internalTab = TabItem(id: tab.id.id, title: tab.title, icon: tab.icon, isDirty: tab.isDirty, isClosable: tab.isClosable, isPinned: tab.isPinned)
+            internalTab = TabItem(id: tab.id.id, title: tab.title, icon: tab.icon, isDirty: tab.isDirty, hasConflict: tab.hasConflict, isClosable: tab.isClosable, isPinned: tab.isPinned)
         } else {
             internalTab = nil
         }

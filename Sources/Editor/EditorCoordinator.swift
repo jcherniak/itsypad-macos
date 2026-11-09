@@ -881,7 +881,13 @@ final class EditorCoordinator: BonsplitDelegate, @unchecked Sendable {
             state.highlightCoordinator.language = tab.language
             state.highlightCoordinator.scheduleHighlightIfNeeded()
             state.gutterView.needsDisplay = true
-            controller.updateTab(bonsplitID, title: tab.name, isDirty: tab.isDirty)
+            controller.updateTab(bonsplitID, title: tab.name, isDirty: tab.isDirty, hasConflict: tab.hasConflict)
+        }
+
+        for tabID in result.flaggedTabIDs {
+            guard let tab = tabStore.tabs.first(where: { $0.id == tabID }),
+                  let bonsplitID = tabIDMap[tabID] else { continue }
+            controller.updateTab(bonsplitID, hasConflict: tab.hasConflict)
         }
 
         // Close tabs removed from cloud

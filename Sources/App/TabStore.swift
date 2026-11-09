@@ -12,6 +12,12 @@ struct TabData: Identifiable, Equatable {
     var isPinned: Bool
     var cursorPosition: Int
     var lastModified: Date
+    var headVersionID: String?
+    var deletedAt: Date?
+    var deletedOn: String?
+    /// Local only: set when a sync conflict kept this device's text and
+    /// parked the other side's in history. Cleared by Resolve or a restore.
+    var hasConflict: Bool
 
     init(
         id: UUID = UUID(),
@@ -24,7 +30,11 @@ struct TabData: Identifiable, Equatable {
         isDirty: Bool = false,
         isPinned: Bool = false,
         cursorPosition: Int = 0,
-        lastModified: Date = Date()
+        lastModified: Date = Date(),
+        headVersionID: String? = nil,
+        deletedAt: Date? = nil,
+        deletedOn: String? = nil,
+        hasConflict: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -37,6 +47,10 @@ struct TabData: Identifiable, Equatable {
         self.isPinned = isPinned
         self.cursorPosition = cursorPosition
         self.lastModified = lastModified
+        self.headVersionID = headVersionID
+        self.deletedAt = deletedAt
+        self.deletedOn = deletedOn
+        self.hasConflict = hasConflict
     }
 }
 
@@ -54,6 +68,10 @@ extension TabData: Codable {
         isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         cursorPosition = try c.decode(Int.self, forKey: .cursorPosition)
         lastModified = try c.decodeIfPresent(Date.self, forKey: .lastModified) ?? .distantPast
+        headVersionID = try c.decodeIfPresent(String.self, forKey: .headVersionID)
+        deletedAt = try c.decodeIfPresent(Date.self, forKey: .deletedAt)
+        deletedOn = try c.decodeIfPresent(String.self, forKey: .deletedOn)
+        hasConflict = try c.decodeIfPresent(Bool.self, forKey: .hasConflict) ?? false
     }
 }
 
@@ -474,32 +492,32 @@ class TabStore: ObservableObject {
         var newTabIDs: [UUID] = []
         var updatedTabIDs: [UUID] = []
         var removedTabIDs: [UUID] = []
+        /// Tabs whose text is unchanged but whose conflict badge changed.
+        var flaggedTabIDs: [UUID] = []
     }
 
     static let cloudTabsMerged = Notification.Name("cloudTabsMerged")
 
     func applyCloudTab(_ data: CloudTabRecord) {
         var result = CloudMergeResult()
+        var touched = false
 
         if let localIndex = tabs.firstIndex(where: { $0.id == data.id }) {
-            // Only accept cloud version if it's newer than local – this guard
-            // alone protects local content during a first sync too; a blanket
-            // first-sync suppression silently drops legitimate remote edits
-            guard data.lastModified > tabs[localIndex].lastModified else {
-                return
-            }
-            if tabs[localIndex].content != data.content
-                || tabs[localIndex].name != data.name
-                || tabs[localIndex].language != data.language {
-                if tabs[localIndex].content != data.content {
-                    snapshotBeforeCloudOverwrite(id: data.id)
-                }
-                tabs[localIndex].content = data.content
+            if tabs[localIndex].content != data.content {
+                mergeCloudContent(at: localIndex, data: data, result: &result)
+            } else if data.lastModified >= tabs[localIndex].lastModified,
+                      tabs[localIndex].name != data.name
+                        || tabs[localIndex].language != data.language
+                        || tabs[localIndex].languageLocked != data.languageLocked {
+                // Content-equal records only carry metadata; last write wins there.
                 tabs[localIndex].name = data.name
                 tabs[localIndex].language = data.language
                 tabs[localIndex].languageLocked = data.languageLocked
-                tabs[localIndex].lastModified = data.lastModified
                 result.updatedTabIDs.append(data.id)
+            }
+            if let index = tabs.firstIndex(where: { $0.id == data.id }), tabs[index].lastModified < data.lastModified {
+                tabs[index].lastModified = data.lastModified
+                touched = true
             }
         } else {
             let tab = TabData(
@@ -509,13 +527,14 @@ class TabStore: ObservableObject {
                 language: data.language,
                 languageLocked: data.languageLocked,
                 isDirty: !data.content.isEmpty,
-                lastModified: data.lastModified
+                lastModified: data.lastModified,
+                headVersionID: data.headVersionID
             )
             tabs.append(tab)
             result.newTabIDs.append(data.id)
         }
 
-        let changed = !result.newTabIDs.isEmpty || !result.updatedTabIDs.isEmpty
+        let changed = !result.newTabIDs.isEmpty || !result.updatedTabIDs.isEmpty || !result.flaggedTabIDs.isEmpty
         lastICloudSync = Date()
 
         if changed {
@@ -524,8 +543,107 @@ class TabStore: ObservableObject {
                 object: self,
                 userInfo: ["result": result]
             )
+        }
+        if changed || touched {
             scheduleSave()
         }
+    }
+
+    /// Remote text differs from the live text. The live text is always
+    /// snapshotted first, so nothing below can lose it. Then, in order:
+    /// fast-forward when the remote descends from our text, three-way merge
+    /// against the common ancestor when one is known, otherwise keep ours and
+    /// park the remote text in history as a labelled conflict version. The
+    /// remote device is only known through its head version, which syncs as a
+    /// TabVersion record.
+    private func mergeCloudContent(at index: Int, data: CloudTabRecord, result: inout CloudMergeResult) {
+        let id = data.id
+        let localText = tabs[index].content
+        let remoteHead = data.headVersionID.flatMap { versionStore.version(withID: $0) }
+        let remoteDevice = remoteHead?.device
+
+        dropSnapshotState(id: id)
+        let hadHistory = versionStore.latest(for: id) != nil
+        appendVersion(id: id, text: localText, source: .conflict)
+
+        let localID = TabVersion.makeID(tabID: id, text: localText)
+        let remoteID = TabVersion.makeID(tabID: id, text: data.content)
+        // The remote text descends from the remote head, not from our snapshot.
+        let remoteParent = data.headVersionID == remoteID ? nil : data.headVersionID
+        if (!hadHistory && localText.isEmpty) || data.headVersionID == localID {
+            tabs[index].content = data.content
+            tabs[index].name = data.name
+            tabs[index].language = data.language
+            tabs[index].languageLocked = data.languageLocked
+            appendVersion(id: id, text: data.content, source: .edit, device: remoteDevice ?? "iCloud", parentID: remoteParent)
+            result.updatedTabIDs.append(id)
+            return
+        }
+
+        if let base = mergeBase(tabID: id, localID: localID, remoteHeadID: data.headVersionID),
+           case .clean(let merged) = LineDiff.merge3(base: base.text, ours: localText, theirs: data.content) {
+            applyContent(id: id, content: merged)
+            tabs[index].language = data.language
+            tabs[index].languageLocked = data.languageLocked
+            appendVersion(id: id, text: merged, source: .edit)
+            if merged == data.content {
+                tabs[index].name = data.name
+            }
+            result.updatedTabIDs.append(id)
+            return
+        }
+
+        let device = remoteDevice
+            ?? String(localized: "history.conflict_device_unknown", defaultValue: "another device")
+        let time = now().formatted(date: .omitted, time: .shortened)
+        let label = String(localized: "history.conflict_label", defaultValue: "Conflict – \(device) \(time)")
+        appendVersion(
+            id: id,
+            text: data.content,
+            source: .conflict,
+            device: remoteDevice ?? "iCloud",
+            label: label,
+            parentID: remoteParent
+        )
+        tabs[index].hasConflict = true
+        result.flaggedTabIDs.append(id)
+        CloudSyncEngine.shared.recordChanged(id)
+    }
+
+    /// Common ancestor of our text and the remote head: the first version on
+    /// the remote head's parent chain that also lies on our own chain. The
+    /// head itself qualifies only when it is in our lineage – a head that was
+    /// merely synced down would make the remote edits look like ours.
+    private func mergeBase(tabID: UUID, localID: String, remoteHeadID: String?) -> TabVersion? {
+        var ours = Set<String>()
+        var cursor = versionStore.version(withID: localID) ?? versionStore.latest(for: tabID)
+        while let version = cursor, !ours.contains(version.id) {
+            ours.insert(version.id)
+            cursor = version.parentID.flatMap { versionStore.version(withID: $0) }
+        }
+
+        var seen = Set<String>()
+        var candidate = remoteHeadID.flatMap { versionStore.version(withID: $0) }
+        while let version = candidate, !seen.contains(version.id) {
+            if ours.contains(version.id) { return version }
+            seen.insert(version.id)
+            candidate = version.parentID.flatMap { versionStore.version(withID: $0) }
+        }
+        return nil
+    }
+
+    /// Clears the conflict badge once the user has looked at both texts.
+    func resolveConflict(id: UUID) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }), tabs[index].hasConflict else { return }
+        tabs[index].hasConflict = false
+        var result = CloudMergeResult()
+        result.flaggedTabIDs.append(id)
+        NotificationCenter.default.post(
+            name: Self.cloudTabsMerged,
+            object: self,
+            userInfo: ["result": result]
+        )
+        scheduleSave()
     }
 
     func removeCloudTab(id: UUID) {
@@ -641,13 +759,8 @@ class TabStore: ObservableObject {
         cancelPendingSnapshot(id: id)
         commitHeldSnapshot(id: id)
         appendVersion(id: id, text: tabs[index].content, source: .restore)
+        tabs[index].hasConflict = false
         setContentExternally(id: id, content: version.text, cursor: 0)
-    }
-
-    private func snapshotBeforeCloudOverwrite(id: UUID) {
-        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
-        dropSnapshotState(id: id)
-        appendVersion(id: id, text: tabs[index].content, source: .conflict)
     }
 
     private func cancelPendingSnapshot(id: UUID) {
@@ -659,22 +772,46 @@ class TabStore: ObservableObject {
         discardHeldSnapshot(id: id)
     }
 
+    /// Appends `text` as a version and records it as the tab's head – also
+    /// when the same text is already in history, since the head names the
+    /// text this device last recorded, which the other device fast-forwards to.
+    /// The parent is that head, not the newest version by date: versions
+    /// synced down from another device must not enter this device's lineage.
     @discardableResult
-    private func appendVersion(id: UUID, text: String, source: TabVersion.Source) -> Bool {
-        guard tabs.contains(where: { $0.id == id }) else { return false }
+    private func appendVersion(
+        id: UUID,
+        text: String,
+        source: TabVersion.Source,
+        device: String? = nil,
+        label: String? = nil,
+        parentID: String? = nil
+    ) -> Bool {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
         let latest = versionStore.latest(for: id)
         if latest == nil && text.isEmpty { return false }
         let version = TabVersion(
             tabID: id,
-            parentID: latest?.id,
+            parentID: parentID ?? tabs[index].headVersionID ?? latest?.id,
             createdAt: now(),
-            device: deviceName,
+            device: device ?? deviceName,
+            label: label,
             text: text,
             source: source
         )
-        guard versionStore.append(version) else { return false }
-        versionStore.prune(tabID: id, now: now(), keepCount: historyKeepCount(), keepDays: historyKeepDays())
-        return true
+        let appended = versionStore.append(version)
+        if appended {
+            versionStore.prune(tabID: id, now: now(), keepCount: historyKeepCount(), keepDays: historyKeepDays())
+        } else if let label, versionStore.version(withID: version.id)?.hasLabel == false {
+            versionStore.setLabel(label, versionID: version.id, tabID: id)
+        }
+        if tabs[index].headVersionID != version.id {
+            tabs[index].headVersionID = version.id
+            if tabs[index].fileURL == nil {
+                CloudSyncEngine.shared.recordChanged(id)
+            }
+            scheduleSave()
+        }
+        return appended
     }
 
     // MARK: - KVS migration (v1.6.0 iCloud sync → App Store)
