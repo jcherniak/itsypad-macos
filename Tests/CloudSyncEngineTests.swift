@@ -24,6 +24,7 @@ final class CloudSyncEngineTests: XCTestCase {
         XCTAssertTrue(record.languageLocked)
         XCTAssertEqual(record.lastModified, now)
         XCTAssertNil(record.headVersionID)
+        XCTAssertNil(record.fastForwardFromID)
     }
 
     // MARK: - ScratchTab record fields
@@ -53,6 +54,17 @@ final class CloudSyncEngineTests: XCTestCase {
         XCTAssertEqual(parsed?.headVersionID, "abc123")
     }
 
+    func testScratchTabRecordRoundTripsFastForwardFromID() {
+        let tab = TabData(name: "Note", content: "ours", headVersionID: "head", pendingFastForwardID: "theirs")
+        let record = CKRecord(recordType: "ScratchTab", recordID: CKRecord.ID(recordName: tab.id.uuidString))
+        CloudSyncEngine.fillScratchTabRecord(record, from: tab)
+        XCTAssertEqual(record["fastForwardFromID"] as? String, "theirs")
+
+        let parsed = CloudSyncEngine.scratchTabRecord(from: record)
+        XCTAssertEqual(parsed?.headVersionID, "head")
+        XCTAssertEqual(parsed?.fastForwardFromID, "theirs")
+    }
+
     func testScratchTabRecordRoundTripsTombstone() {
         let deletedAt = Date(timeIntervalSince1970: 1_800_000_000)
         let tab = TabData(name: "Note", content: "bye", deletedAt: deletedAt, deletedOn: "iPhone")
@@ -74,6 +86,7 @@ final class CloudSyncEngineTests: XCTestCase {
         let parsed = CloudSyncEngine.scratchTabRecord(from: scratchTabRecord(id: UUID(), content: "x"))
         XCTAssertNotNil(parsed)
         XCTAssertNil(parsed?.headVersionID)
+        XCTAssertNil(parsed?.fastForwardFromID)
         XCTAssertNil(CloudSyncEngine.scratchTabRecord(from: CKRecord(recordType: "ScratchTab")))
     }
 
