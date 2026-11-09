@@ -5,6 +5,11 @@ extension Notification.Name {
     static let settingsChanged = Notification.Name("settingsChanged")
 }
 
+enum LaunchBehavior: String, CaseIterable {
+    case reopenLast
+    case newNote
+}
+
 class SettingsStore: ObservableObject {
     static let shared = SettingsStore()
 
@@ -89,10 +94,11 @@ class SettingsStore: ObservableObject {
         }
     }
 
-    @Published var newTabOnLaunch: Bool = false {
+    @Published var launchBehavior: LaunchBehavior = .reopenLast {
         didSet {
             guard !isLoading else { return }
-            defaults.set(newTabOnLaunch, forKey: "newTabOnLaunch")
+            defaults.set(launchBehavior.rawValue, forKey: "launchBehavior")
+            NotificationCenter.default.post(name: .settingsChanged, object: nil)
         }
     }
 
@@ -321,7 +327,9 @@ class SettingsStore: ObservableObject {
         syntaxTheme = SyntaxThemeRegistry.themes.contains(where: { $0.id == savedTheme }) ? savedTheme : "itsypad"
         showInDock = defaults.object(forKey: "showInDock") as? Bool ?? true
         showInMenuBar = defaults.object(forKey: "showInMenuBar") as? Bool ?? true
-        newTabOnLaunch = defaults.bool(forKey: "newTabOnLaunch")
+        // "newTabOnLaunch" is the pre-1.19 toggle this setting replaces.
+        launchBehavior = defaults.string(forKey: "launchBehavior").flatMap(LaunchBehavior.init(rawValue:))
+            ?? (defaults.bool(forKey: "newTabOnLaunch") ? .newNote : .reopenLast)
         showLineNumbers = defaults.object(forKey: "showLineNumbers") as? Bool ?? true
         highlightCurrentLine = defaults.bool(forKey: "highlightCurrentLine")
         indentUsingSpaces = defaults.object(forKey: "indentUsingSpaces") as? Bool ?? true

@@ -216,4 +216,36 @@ final class SettingsStoreTests: XCTestCase {
 
         preDefaults.removePersistentDomain(forName: preSuiteName)
     }
+
+    // MARK: - Launch behaviour
+
+    func testDefaultLaunchBehavior() {
+        XCTAssertEqual(store.launchBehavior, .reopenLast)
+    }
+
+    func testLaunchBehaviorPersistsToDefaults() {
+        store.launchBehavior = .newNote
+        XCTAssertEqual(defaults.string(forKey: "launchBehavior"), "newNote")
+    }
+
+    func testLaunchBehaviorLoadsFromPrePopulatedDefaults() {
+        defaults.set("newNote", forKey: "launchBehavior")
+        XCTAssertEqual(SettingsStore(defaults: defaults).launchBehavior, .newNote)
+    }
+
+    func testInvalidLaunchBehaviorFallsBackToReopenLast() {
+        defaults.set("bogus", forKey: "launchBehavior")
+        XCTAssertEqual(SettingsStore(defaults: defaults).launchBehavior, .reopenLast)
+    }
+
+    func testLegacyNewTabOnLaunchMigratesToNewNote() {
+        defaults.set(true, forKey: "newTabOnLaunch")
+        XCTAssertEqual(SettingsStore(defaults: defaults).launchBehavior, .newNote)
+    }
+
+    func testExplicitLaunchBehaviorWinsOverLegacyToggle() {
+        defaults.set(true, forKey: "newTabOnLaunch")
+        defaults.set("reopenLast", forKey: "launchBehavior")
+        XCTAssertEqual(SettingsStore(defaults: defaults).launchBehavior, .reopenLast)
+    }
 }

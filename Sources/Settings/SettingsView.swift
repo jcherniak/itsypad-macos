@@ -101,11 +101,9 @@ struct GeneralSettingsView: View {
                     .disabled(!store.showInMenuBar)
                 Toggle(String(localized: "settings.general.show_in_menu_bar", defaultValue: "Show in menu bar"), isOn: $store.showInMenuBar)
                     .disabled(!store.showInDock)
-                VStack(alignment: .leading, spacing: 4) {
-                    Toggle(String(localized: "settings.general.new_tab_on_launch", defaultValue: "New tab on launch"), isOn: $store.newTabOnLaunch)
-                    Text(String(localized: "settings.general.new_tab_on_launch_description", defaultValue: "Creates an empty tab on launch if none exists."))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                Picker(String(localized: "settings.general.launch_behavior", defaultValue: "On launch"), selection: $store.launchBehavior) {
+                    Text(String(localized: "settings.general.launch_reopen_last", defaultValue: "Reopen last tabs")).tag(LaunchBehavior.reopenLast)
+                    Text(String(localized: "settings.general.launch_new_note", defaultValue: "Start new note")).tag(LaunchBehavior.newNote)
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Toggle(String(localized: "settings.general.icloud_sync", defaultValue: "iCloud sync"), isOn: Binding(
