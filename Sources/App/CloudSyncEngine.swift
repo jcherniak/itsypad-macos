@@ -10,6 +10,8 @@ struct CloudTabRecord {
     var languageLocked: Bool
     var lastModified: Date
     var headVersionID: String? = nil
+    var deletedAt: Date? = nil
+    var deletedOn: String? = nil
 }
 
 struct CloudClipboardRecord {
@@ -261,7 +263,7 @@ final class CloudSyncEngine: @unchecked Sendable {
     // MARK: - Record building
 
     private func buildScratchTabRecord(id: UUID, recordID: CKRecord.ID) -> CKRecord? {
-        guard let tab = TabStore.shared.tabs.first(where: { $0.id == id && $0.fileURL == nil }) else { return nil }
+        guard let tab = TabStore.shared.tab(withID: id), tab.fileURL == nil else { return nil }
         let record = cachedRecord(for: recordID, recordType: RecordType.scratchTab.rawValue)
         Self.fillScratchTabRecord(record, from: tab)
         return record
@@ -274,6 +276,8 @@ final class CloudSyncEngine: @unchecked Sendable {
         record["languageLocked"] = (tab.languageLocked ? 1 : 0) as CKRecordValue
         record["lastModified"] = tab.lastModified as CKRecordValue
         record["headVersionID"] = tab.headVersionID.map { $0 as CKRecordValue }
+        record["deletedAt"] = tab.deletedAt.map { $0 as CKRecordValue }
+        record["deletedOn"] = tab.deletedOn.map { $0 as CKRecordValue }
     }
 
     private func buildClipboardEntryRecord(id: UUID, recordID: CKRecord.ID) -> CKRecord? {
@@ -371,7 +375,9 @@ final class CloudSyncEngine: @unchecked Sendable {
             language: language,
             languageLocked: languageLocked,
             lastModified: lastModified,
-            headVersionID: record["headVersionID"] as? String
+            headVersionID: record["headVersionID"] as? String,
+            deletedAt: record["deletedAt"] as? Date,
+            deletedOn: record["deletedOn"] as? String
         )
     }
 
@@ -426,8 +432,8 @@ final class CloudSyncEngine: @unchecked Sendable {
     static func mergeServerTab(_ serverRecord: CKRecord, into tabStore: TabStore) -> Bool {
         guard let data = scratchTabRecord(from: serverRecord) else { return false }
         tabStore.applyCloudTab(data)
-        guard let tab = tabStore.tabs.first(where: { $0.id == data.id }) else { return false }
-        return tab.content != data.content
+        guard let tab = tabStore.tab(withID: data.id) else { return false }
+        return tab.content != data.content || (tab.deletedAt == nil) != (data.deletedAt == nil)
     }
 
     private func resolveClipboardConflict(local record: CKRecord, server serverRecord: CKRecord) {
@@ -613,16 +619,15 @@ extension CloudSyncEngine: CKSyncEngineDelegate {
     // MARK: - Helpers
 
     private func reuploadAllRecords() {
-        let tabChanges: [CKSyncEngine.PendingRecordZoneChange] = TabStore.shared.tabs
-            .filter { $0.fileURL == nil }
+        let scratchTabs = TabStore.shared.tabs.filter { $0.fileURL == nil } + TabStore.shared.trashedTabs
+        let tabChanges: [CKSyncEngine.PendingRecordZoneChange] = scratchTabs
             .map { .saveRecord(CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)) }
 
         let clipboardChanges: [CKSyncEngine.PendingRecordZoneChange] = ClipboardStore.shared.entries
             .filter { $0.kind == .text }
             .map { .saveRecord(CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)) }
 
-        let versionChanges: [CKSyncEngine.PendingRecordZoneChange] = TabStore.shared.tabs
-            .filter { $0.fileURL == nil }
+        let versionChanges: [CKSyncEngine.PendingRecordZoneChange] = scratchTabs
             .flatMap { VersionStore.shared.versions(for: $0.id) }
             .map { .saveRecord(CKRecord.ID(recordName: $0.id, zoneID: zoneID)) }
 

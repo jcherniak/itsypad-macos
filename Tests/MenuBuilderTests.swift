@@ -26,6 +26,16 @@ final class MenuBuilderTests: XCTestCase {
         XCTAssertTrue(historyItem.target === target)
     }
 
+    func testTrashFollowsVersionHistoryWithoutShortcut() throws {
+        let items = try XCTUnwrap(MenuBuilder(target: target).buildFileMenuItem(recentFilesMenu: NSMenu()).submenu?.items)
+        let historyIndex = try XCTUnwrap(items.firstIndex { $0.action == #selector(AppDelegate.showVersionHistoryAction) })
+        let trashItem = items[historyIndex + 1]
+
+        XCTAssertEqual(trashItem.action, #selector(AppDelegate.showTrashAction))
+        XCTAssertEqual(trashItem.keyEquivalent, "")
+        XCTAssertTrue(trashItem.target === target)
+    }
+
     func testTabNavigationKeepsCommandShiftBrackets() throws {
         let items = try XCTUnwrap(MenuBuilder(target: target).buildViewMenuItem().submenu?.items)
         let nextTabItem = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.nextTabAction) })

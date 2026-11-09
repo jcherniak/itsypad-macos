@@ -53,6 +53,23 @@ final class CloudSyncEngineTests: XCTestCase {
         XCTAssertEqual(parsed?.headVersionID, "abc123")
     }
 
+    func testScratchTabRecordRoundTripsTombstone() {
+        let deletedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let tab = TabData(name: "Note", content: "bye", deletedAt: deletedAt, deletedOn: "iPhone")
+        let record = CKRecord(recordType: "ScratchTab", recordID: CKRecord.ID(recordName: tab.id.uuidString))
+        CloudSyncEngine.fillScratchTabRecord(record, from: tab)
+        XCTAssertEqual(record["deletedAt"] as? Date, deletedAt)
+        XCTAssertEqual(record["deletedOn"] as? String, "iPhone")
+
+        let parsed = CloudSyncEngine.scratchTabRecord(from: record)
+        XCTAssertEqual(parsed?.deletedAt, deletedAt)
+        XCTAssertEqual(parsed?.deletedOn, "iPhone")
+
+        let live = CloudSyncEngine.scratchTabRecord(from: scratchTabRecord(id: UUID(), content: "x"))
+        XCTAssertNil(live?.deletedAt)
+        XCTAssertNil(live?.deletedOn)
+    }
+
     func testScratchTabRecordWithoutHeadParsesAsNil() {
         let parsed = CloudSyncEngine.scratchTabRecord(from: scratchTabRecord(id: UUID(), content: "x"))
         XCTAssertNotNil(parsed)
@@ -116,6 +133,24 @@ final class CloudSyncEngineTests: XCTestCase {
         let server = scratchTabRecord(id: id, content: "shared and more", headVersionID: headID)
         XCTAssertFalse(CloudSyncEngine.mergeServerTab(server, into: store))
         XCTAssertEqual(store.tabs.last?.content, "shared and more")
+    }
+
+    func testMergeServerTabAppliesTombstoneWithoutRePush() {
+        let store = makeTabStore()
+        store.addNewTab()
+        let id = store.tabs.last!.id
+        store.updateContent(id: id, content: "note")
+
+        let server = scratchTabRecord(id: id, content: "note")
+        server["deletedAt"] = Date() as CKRecordValue
+        server["deletedOn"] = "iPhone" as CKRecordValue
+        XCTAssertFalse(CloudSyncEngine.mergeServerTab(server, into: store))
+        XCTAssertEqual(store.trashedTabs.map(\.id), [id])
+        XCTAssertFalse(store.tabs.contains { $0.id == id })
+
+        XCTAssertFalse(CloudSyncEngine.mergeServerTab(scratchTabRecord(id: id, content: "note"), into: store))
+        XCTAssertTrue(store.trashedTabs.isEmpty)
+        XCTAssertTrue(store.tabs.contains { $0.id == id })
     }
 
     // MARK: - CloudClipboardRecord

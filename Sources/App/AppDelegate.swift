@@ -62,6 +62,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSTool
     private var editorCoordinator: EditorCoordinator?
     private var fileBrowserSplitVC: FileBrowserSplitViewController?
     private var settingsWindow: NSWindow?
+    private var trashWindow: NSWindow?
     private var windowWasVisible = false
     private var workspaceObserver: Any?
     private var activationObserver: Any?
@@ -171,6 +172,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSTool
             showWindowAndOpen(url: url)
         }
         pendingFileURLs.removeAll()
+
+        // After the deferred sync start, so the hard deletes reach the server.
+        DispatchQueue.main.async {
+            TabStore.shared.autoEmptyTrash()
+        }
     }
 
     @objc private func editorWindowWillClose(_ note: Notification) {
@@ -209,6 +215,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSTool
         // Pull remote changes when the user comes back to the app – pushes
         // can be missed while the Mac sleeps
         CloudSyncEngine.shared.fetchChanges()
+        TabStore.shared.autoEmptyTrash()
     }
 
     func applicationDidResignActive(_ notification: Notification) {
@@ -618,6 +625,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSTool
             updateDockVisibility()
         }
         VersionHistorySheet.present(tabID: tabID, over: window)
+    }
+
+    @objc func showTrashAction() {
+        if let window = trashWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 380),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = String(localized: "trash.title", defaultValue: "Trash")
+        window.contentViewController = NSHostingController(rootView: TrashView())
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        trashWindow = window
     }
 
     @objc func findAction(_ sender: NSMenuItem) {

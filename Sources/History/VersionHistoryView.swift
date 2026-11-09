@@ -9,6 +9,7 @@ struct VersionHistoryView: View {
     @State private var selectedID: String? = VersionHistoryView.currentRowID
     @State private var namingVersionID: String?
     @State private var nameDraft = ""
+    @State private var deletingVersionID: String?
 
     /// Version ids are SHA-256 hex digests, so this tag can never collide.
     static let currentRowID = "current"
@@ -107,6 +108,28 @@ struct VersionHistoryView: View {
                 namingVersionID = nil
             }
         }
+        .alert(
+            String(localized: "history.delete_version.title", defaultValue: "Delete this version?"),
+            isPresented: Binding(
+                get: { deletingVersionID != nil },
+                set: { if !$0 { deletingVersionID = nil } }
+            )
+        ) {
+            Button(String(localized: "history.delete_version.delete", defaultValue: "Delete"), role: .destructive) {
+                if let versionID = deletingVersionID {
+                    tabStore.deleteVersion(id: versionID, tabID: tabID)
+                    if selectedID == versionID {
+                        selectedID = Self.currentRowID
+                    }
+                }
+                deletingVersionID = nil
+            }
+            Button(String(localized: "history.delete_version.cancel", defaultValue: "Cancel"), role: .cancel) {
+                deletingVersionID = nil
+            }
+        } message: {
+            Text(String(localized: "history.delete_version.message", defaultValue: "The version is removed from the history on all devices. This cannot be undone."))
+        }
     }
 
     private var header: some View {
@@ -131,6 +154,10 @@ struct VersionHistoryView: View {
                 guard let version = selectedVersion else { return }
                 nameDraft = version.label ?? ""
                 namingVersionID = version.id
+            }
+            .disabled(selectedVersion == nil)
+            Button(String(localized: "history.delete_version", defaultValue: "Delete version"), role: .destructive) {
+                deletingVersionID = selectedVersion?.id
             }
             .disabled(selectedVersion == nil)
             if tab?.hasConflict == true {
@@ -166,6 +193,11 @@ struct VersionHistoryView: View {
                     ForEach(group.entries) { entry in
                         VersionRow(version: entry.version, previous: entry.previous)
                             .tag(entry.version.id)
+                            .contextMenu {
+                                Button(String(localized: "history.delete_version", defaultValue: "Delete version"), role: .destructive) {
+                                    deletingVersionID = entry.version.id
+                                }
+                            }
                     }
                 }
             }

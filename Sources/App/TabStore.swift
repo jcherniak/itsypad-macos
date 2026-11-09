@@ -79,6 +79,8 @@ class TabStore: ObservableObject {
     static let shared = TabStore(launchBehavior: SettingsStore.shared.launchBehavior)
 
     @Published var tabs: [TabData] = []
+    /// Soft-deleted scratch tabs; their versions stay until a hard delete.
+    @Published var trashedTabs: [TabData] = []
     @Published var selectedTabID: UUID? {
         didSet {
             if let previous = oldValue, previous != selectedTabID {
@@ -106,6 +108,9 @@ class TabStore: ObservableObject {
     var historyEnabled: () -> Bool = { SettingsStore.shared.versionHistoryEnabled }
     var historyKeepCount: () -> Int = { SettingsStore.shared.versionKeepCount }
     var historyKeepDays: () -> Int = { SettingsStore.shared.versionKeepDays }
+    var trashAutoEmptyDays: () -> Int = { SettingsStore.shared.trashAutoEmptyDays }
+    var cloudRecordChanged: (UUID) -> Void = { CloudSyncEngine.shared.recordChanged($0) }
+    var cloudRecordDeleted: (UUID) -> Void = { CloudSyncEngine.shared.recordDeleted($0) }
 
     var selectedTab: TabData? {
         tabs.first { $0.id == selectedTabID }
@@ -152,7 +157,7 @@ class TabStore: ObservableObject {
         let tab = TabData()
         tabs.append(tab)
         selectedTabID = tab.id
-        CloudSyncEngine.shared.recordChanged(tab.id)
+        cloudRecordChanged(tab.id)
         scheduleSave()
     }
 
@@ -197,28 +202,124 @@ class TabStore: ObservableObject {
         scopedAccessTabIDs.insert(id)
     }
 
+    /// Closing a scratch tab moves it to the trash with a tombstone that syncs;
+    /// its text and versions stay until it is deleted permanently. File-backed
+    /// tabs are not Itsypad-owned data and simply close.
     func closeTab(id: UUID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
-        let isScratch = tabs[index].fileURL == nil
         if scopedAccessTabIDs.remove(id) != nil, let url = tabs[index].fileURL {
             url.stopAccessingSecurityScopedResource()
         }
-        if isScratch {
-            CloudSyncEngine.shared.recordDeleted(id)
+        if tabs[index].fileURL == nil {
+            commitPendingSnapshot(id: id)
+            commitHeldSnapshot(id: id)
+            var tab = tabs.remove(at: index)
+            tab.deletedAt = now()
+            tab.deletedOn = deviceName
+            trashedTabs.append(tab)
+            cloudRecordChanged(id)
+        } else {
+            dropSnapshotState(id: id)
+            versionStore.deleteAll(tabID: id)
+            tabs.remove(at: index)
         }
+
+        selectAfterRemoval(of: id, at: index)
+        scheduleSave()
+    }
+
+    private func selectAfterRemoval(of id: UUID, at index: Int) {
+        if tabs.isEmpty {
+            addNewTab()
+        } else if selectedTabID == id {
+            selectedTabID = tabs[min(index, tabs.count - 1)].id
+        }
+    }
+
+    /// Live or trashed – the cloud mirror serves both.
+    func tab(withID id: UUID) -> TabData? {
+        tabs.first { $0.id == id } ?? trashedTabs.first { $0.id == id }
+    }
+
+    // MARK: - Trash
+
+    func restoreFromTrash(id: UUID) {
+        guard let index = trashedTabs.firstIndex(where: { $0.id == id }) else { return }
+        var tab = trashedTabs.remove(at: index)
+        tab.deletedAt = nil
+        tab.deletedOn = nil
+        tabs.append(tab)
+        selectedTabID = id
+        cloudRecordChanged(id)
+        var result = CloudMergeResult()
+        result.newTabIDs.append(id)
+        NotificationCenter.default.post(
+            name: Self.cloudTabsMerged,
+            object: self,
+            userInfo: ["result": result]
+        )
+        scheduleSave()
+    }
+
+    /// Removes the tab and its whole history here and on the server. The
+    /// versions go first: their delete hooks only fire while the tab is still
+    /// known as a scratch tab.
+    func deletePermanently(id: UUID) {
+        let liveIndex = tabs.firstIndex { $0.id == id }
+        guard liveIndex != nil || trashedTabs.contains(where: { $0.id == id }) else { return }
+        let isScratch = isScratchTab(id)
         dropSnapshotState(id: id)
         versionStore.deleteAll(tabID: id)
-        tabs.remove(at: index)
-
-        if selectedTabID == id {
-            if tabs.isEmpty {
-                addNewTab()
-            } else {
-                let newIndex = min(index, tabs.count - 1)
-                selectedTabID = tabs[newIndex].id
-            }
+        trashedTabs.removeAll { $0.id == id }
+        if let liveIndex {
+            tabs.remove(at: liveIndex)
+            var result = CloudMergeResult()
+            result.removedTabIDs.append(id)
+            NotificationCenter.default.post(
+                name: Self.cloudTabsMerged,
+                object: self,
+                userInfo: ["result": result]
+            )
+            selectAfterRemoval(of: id, at: liveIndex)
+        }
+        if isScratch {
+            cloudRecordDeleted(id)
         }
         scheduleSave()
+    }
+
+    func emptyTrash() {
+        for id in trashedTabs.map(\.id) {
+            deletePermanently(id: id)
+        }
+    }
+
+    /// Hard-deletes trashed tabs older than the auto-empty setting (0 = never).
+    func autoEmptyTrash() {
+        let days = trashAutoEmptyDays()
+        guard days > 0 else { return }
+        let cutoff = now().addingTimeInterval(-TimeInterval(days) * VersionPrunePolicy.day)
+        for tab in trashedTabs where (tab.deletedAt ?? .distantFuture) < cutoff {
+            deletePermanently(id: tab.id)
+        }
+    }
+
+    /// Hard-deletes one version; the store repoints its children to its parent.
+    /// A deleted head moves back to that parent as well.
+    func deleteVersion(id versionID: String, tabID: UUID) {
+        guard let version = versionStore.version(withID: versionID), version.tabID == tabID else { return }
+        versionStore.delete(versionID: versionID, tabID: tabID)
+        if let index = tabs.firstIndex(where: { $0.id == tabID }), tabs[index].headVersionID == versionID {
+            tabs[index].headVersionID = version.parentID
+            if tabs[index].fileURL == nil {
+                cloudRecordChanged(tabID)
+            }
+            scheduleSave()
+        } else if let index = trashedTabs.firstIndex(where: { $0.id == tabID }), trashedTabs[index].headVersionID == versionID {
+            trashedTabs[index].headVersionID = version.parentID
+            cloudRecordChanged(tabID)
+            scheduleSave()
+        }
     }
 
     func updateContent(id: UUID, content: String) {
@@ -281,7 +382,7 @@ class TabStore: ObservableObject {
         }
 
         if tab.fileURL == nil {
-            CloudSyncEngine.shared.recordChanged(id)
+            cloudRecordChanged(id)
         }
 
         scheduleSave()
@@ -319,7 +420,7 @@ class TabStore: ObservableObject {
         tabs[index].languageLocked = true
         tabs[index].lastModified = Date()
         if tabs[index].fileURL == nil {
-            CloudSyncEngine.shared.recordChanged(id)
+            cloudRecordChanged(id)
         }
         scheduleSave()
     }
@@ -502,23 +603,19 @@ class TabStore: ObservableObject {
         var result = CloudMergeResult()
         var touched = false
 
-        if let localIndex = tabs.firstIndex(where: { $0.id == data.id }) {
-            if tabs[localIndex].content != data.content {
-                mergeCloudContent(at: localIndex, data: data, result: &result)
-            } else if data.lastModified >= tabs[localIndex].lastModified,
-                      tabs[localIndex].name != data.name
-                        || tabs[localIndex].language != data.language
-                        || tabs[localIndex].languageLocked != data.languageLocked {
-                // Content-equal records only carry metadata; last write wins there.
-                tabs[localIndex].name = data.name
-                tabs[localIndex].language = data.language
-                tabs[localIndex].languageLocked = data.languageLocked
-                result.updatedTabIDs.append(data.id)
-            }
-            if let index = tabs.firstIndex(where: { $0.id == data.id }), tabs[index].lastModified < data.lastModified {
-                tabs[index].lastModified = data.lastModified
-                touched = true
-            }
+        if let deletedAt = data.deletedAt {
+            touched = applyCloudTombstone(data, deletedAt: deletedAt, result: &result)
+        } else if let trashedIndex = trashedTabs.firstIndex(where: { $0.id == data.id }) {
+            // Restored on the other device: it comes back here, then its
+            // content merges like any live tab's.
+            var tab = trashedTabs.remove(at: trashedIndex)
+            tab.deletedAt = nil
+            tab.deletedOn = nil
+            tabs.append(tab)
+            result.newTabIDs.append(data.id)
+            touched = mergeCloudTab(at: tabs.count - 1, data: data, result: &result)
+        } else if let localIndex = tabs.firstIndex(where: { $0.id == data.id }) {
+            touched = mergeCloudTab(at: localIndex, data: data, result: &result)
         } else {
             let tab = TabData(
                 id: data.id,
@@ -534,7 +631,8 @@ class TabStore: ObservableObject {
             result.newTabIDs.append(data.id)
         }
 
-        let changed = !result.newTabIDs.isEmpty || !result.updatedTabIDs.isEmpty || !result.flaggedTabIDs.isEmpty
+        let changed = !result.newTabIDs.isEmpty || !result.updatedTabIDs.isEmpty
+            || !result.flaggedTabIDs.isEmpty || !result.removedTabIDs.isEmpty
         lastICloudSync = Date()
 
         if changed {
@@ -547,6 +645,67 @@ class TabStore: ObservableObject {
         if changed || touched {
             scheduleSave()
         }
+    }
+
+    /// Returns true when only `lastModified` moved (nothing to notify, still save).
+    private func mergeCloudTab(at localIndex: Int, data: CloudTabRecord, result: inout CloudMergeResult) -> Bool {
+        if tabs[localIndex].content != data.content {
+            mergeCloudContent(at: localIndex, data: data, result: &result)
+        } else if data.lastModified >= tabs[localIndex].lastModified,
+                  tabs[localIndex].name != data.name
+                    || tabs[localIndex].language != data.language
+                    || tabs[localIndex].languageLocked != data.languageLocked {
+            // Content-equal records only carry metadata; last write wins there.
+            tabs[localIndex].name = data.name
+            tabs[localIndex].language = data.language
+            tabs[localIndex].languageLocked = data.languageLocked
+            result.updatedTabIDs.append(data.id)
+        }
+        if let index = tabs.firstIndex(where: { $0.id == data.id }), tabs[index].lastModified < data.lastModified {
+            tabs[index].lastModified = data.lastModified
+            return true
+        }
+        return false
+    }
+
+    /// A remote tombstone trashes the tab here as well, even over newer local
+    /// edits – those are snapshotted first, so the trashed tab keeps them.
+    private func applyCloudTombstone(_ data: CloudTabRecord, deletedAt: Date, result: inout CloudMergeResult) -> Bool {
+        let id = data.id
+        if let index = tabs.firstIndex(where: { $0.id == id }) {
+            commitPendingSnapshot(id: id)
+            commitHeldSnapshot(id: id)
+            if tabs[index].content != data.content {
+                appendVersion(id: id, text: tabs[index].content, source: .conflict)
+            }
+            var tab = tabs.remove(at: index)
+            tab.deletedAt = deletedAt
+            tab.deletedOn = data.deletedOn
+            tab.lastModified = max(tab.lastModified, data.lastModified)
+            trashedTabs.append(tab)
+            result.removedTabIDs.append(id)
+            selectAfterRemoval(of: id, at: index)
+            return true
+        }
+        if let index = trashedTabs.firstIndex(where: { $0.id == id }) {
+            guard trashedTabs[index].deletedAt != deletedAt || trashedTabs[index].deletedOn != data.deletedOn else { return false }
+            trashedTabs[index].deletedAt = deletedAt
+            trashedTabs[index].deletedOn = data.deletedOn
+            return true
+        }
+        trashedTabs.append(TabData(
+            id: id,
+            name: data.name,
+            content: data.content,
+            language: data.language,
+            languageLocked: data.languageLocked,
+            isDirty: !data.content.isEmpty,
+            lastModified: data.lastModified,
+            headVersionID: data.headVersionID,
+            deletedAt: deletedAt,
+            deletedOn: data.deletedOn
+        ))
+        return true
     }
 
     /// Remote text differs from the live text. The live text is always
@@ -607,7 +766,7 @@ class TabStore: ObservableObject {
         )
         tabs[index].hasConflict = true
         result.flaggedTabIDs.append(id)
-        CloudSyncEngine.shared.recordChanged(id)
+        cloudRecordChanged(id)
     }
 
     /// Common ancestor of our text and the remote head: the first version on
@@ -646,25 +805,30 @@ class TabStore: ObservableObject {
         scheduleSave()
     }
 
+    /// A deleted ScratchTab record is a hard delete: the tab leaves the live
+    /// list or the trash and its history goes with it.
     func removeCloudTab(id: UUID) {
-        guard tabs.contains(where: { $0.id == id }) else { return }
+        let liveIndex = tabs.firstIndex { $0.id == id }
+        guard liveIndex != nil || trashedTabs.contains(where: { $0.id == id }) else { return }
 
         var result = CloudMergeResult()
-        result.removedTabIDs.append(id)
         dropSnapshotState(id: id)
-        tabs.removeAll { $0.id == id }
         versionStore.deleteAll(tabID: id)
-
-        if tabs.isEmpty {
-            addNewTab()
+        trashedTabs.removeAll { $0.id == id }
+        if let liveIndex {
+            result.removedTabIDs.append(id)
+            tabs.remove(at: liveIndex)
+            selectAfterRemoval(of: id, at: liveIndex)
         }
 
         lastICloudSync = Date()
-        NotificationCenter.default.post(
-            name: Self.cloudTabsMerged,
-            object: self,
-            userInfo: ["result": result]
-        )
+        if !result.removedTabIDs.isEmpty {
+            NotificationCenter.default.post(
+                name: Self.cloudTabsMerged,
+                object: self,
+                userInfo: ["result": result]
+            )
+        }
         scheduleSave()
     }
 
@@ -680,7 +844,7 @@ class TabStore: ObservableObject {
     private var heldSnapshots: [UUID: PendingSnapshot] = [:]
 
     func isScratchTab(_ id: UUID) -> Bool {
-        tabs.contains { $0.id == id && $0.fileURL == nil }
+        tabs.contains { $0.id == id && $0.fileURL == nil } || trashedTabs.contains { $0.id == id }
     }
 
     /// Snapshot scheduling for one edit: immediate when the text changed by
@@ -807,7 +971,7 @@ class TabStore: ObservableObject {
         if tabs[index].headVersionID != version.id {
             tabs[index].headVersionID = version.id
             if tabs[index].fileURL == nil {
-                CloudSyncEngine.shared.recordChanged(id)
+                cloudRecordChanged(id)
             }
             scheduleSave()
         }
@@ -919,7 +1083,7 @@ class TabStore: ObservableObject {
 
         let selectedID = existingSession?.selectedTabID ?? oldSession.selectedTabID
         let layout = existingSession?.layout ?? oldSession.layout
-        let merged = SessionData(tabs: mergedTabs, selectedTabID: selectedID, layout: layout)
+        let merged = SessionData(tabs: mergedTabs, selectedTabID: selectedID, layout: layout, trashedTabs: existingSession?.trashedTabs)
 
         do {
             let encoded = try JSONEncoder().encode(merged)
@@ -950,7 +1114,7 @@ class TabStore: ObservableObject {
                     snapshot[index].cursorPosition = position
                 }
             }
-            let session = SessionData(tabs: snapshot, selectedTabID: selectedTabID, layout: currentLayout)
+            let session = SessionData(tabs: snapshot, selectedTabID: selectedTabID, layout: currentLayout, trashedTabs: trashedTabs)
             let data = try JSONEncoder().encode(session)
             try data.write(to: sessionURL, options: .atomic)
         } catch {
@@ -971,6 +1135,7 @@ class TabStore: ObservableObject {
         }
 
         tabs = session.tabs
+        trashedTabs = session.trashedTabs ?? []
         selectedTabID = session.selectedTabID ?? tabs.first?.id
         savedLayout = session.layout
 
@@ -1018,6 +1183,7 @@ struct SessionData: Codable {
     let tabs: [TabData]
     let selectedTabID: UUID?
     var layout: LayoutNode?
+    var trashedTabs: [TabData]?
 }
 
 indirect enum LayoutNode: Codable, Equatable {
