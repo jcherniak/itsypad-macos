@@ -1,6 +1,6 @@
 name: itsypad
 options:
-  bundleIdPrefix: com.nickustinov
+  bundleIdPrefix: com.justinc
   knownRegions: [en, es, fr, de, ru, ja, zh-Hans, zh-Hant, ko, pt-BR, it, pl, Base]
   deploymentTarget:
     macOS: "14.0"
@@ -15,7 +15,7 @@ configs:
 
 settings:
   base:
-    DEVELOPMENT_TEAM: R892A93W42
+    DEVELOPMENT_TEAM: RV54K9ZH64
     CODE_SIGN_STYLE: Automatic
     CODE_SIGN_IDENTITY: "Apple Development"
 
@@ -58,6 +58,7 @@ targets:
           - Info.plist
           - itsypad.entitlements
           - itsypad-direct.entitlements
+          - itsypad-direct-debug.entitlements
       - path: Executable
     dependencies:
       - package: Bonsplit
@@ -82,7 +83,7 @@ targets:
               - public.content
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.nickustinov.itsypad
+        PRODUCT_BUNDLE_IDENTIFIER: com.justinc.itsypad
         PRODUCT_NAME: Itsypad
         PRODUCT_MODULE_NAME: ItsypadCore
         MARKETING_VERSION: "1.18.0"
@@ -99,7 +100,7 @@ targets:
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
       configs:
         Debug:
-          CODE_SIGN_ENTITLEMENTS: Sources/itsypad-direct.entitlements
+          CODE_SIGN_ENTITLEMENTS: Sources/itsypad-direct-debug.entitlements
         Release:
           CODE_SIGN_ENTITLEMENTS: Sources/itsypad-direct.entitlements
         Debug-AppStore:

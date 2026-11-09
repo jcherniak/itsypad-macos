@@ -526,7 +526,7 @@ class TabStore: ObservableObject {
     // Background: versions up to 1.6.0 ran without App Sandbox, so session.json
     // lived at ~/Library/Application Support/Itsypad/session.json. Starting with
     // 1.8.0 we enabled App Sandbox for App Store distribution, which moves the
-    // data directory into ~/Library/Containers/com.nickustinov.itsypad/Data/
+    // data directory into ~/Library/Containers/com.justinc.itsypad/Data/
     // Library/Application Support/Itsypad/session.json.
     //
     // Problem: users upgrading from ≤1.6.0 to 1.8.x lost all their tabs because

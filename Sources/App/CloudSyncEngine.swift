@@ -30,7 +30,7 @@ final class CloudSyncEngine: @unchecked Sendable {
         case clipboardEntry = "ClipboardEntry"
     }
 
-    private static let containerID = "iCloud.com.nickustinov.itsypad"
+    private static let containerID = "iCloud." + (Bundle.main.bundleIdentifier ?? "com.justinc.itsypad")
     private static let zoneName = "ItsypadData"
 
     /// Bump this to force a full re-sync (clears stale metadata and change tokens).
@@ -48,7 +48,7 @@ final class CloudSyncEngine: @unchecked Sendable {
     // Cache of last-known server record data (system fields) per record ID, for conflict detection
     private var recordMetadata: [String: Data] = [:]
 
-    private let logger = Logger(subsystem: "com.nickustinov.itsypad", category: "CloudSync")
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.justinc.itsypad", category: "CloudSync")
 
     init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!

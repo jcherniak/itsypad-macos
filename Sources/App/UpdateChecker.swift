@@ -2,7 +2,7 @@
 import AppKit
 import os.log
 
-private let log = Logger(subsystem: "com.nickustinov.itsypad", category: "UpdateChecker")
+private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.justinc.itsypad", category: "UpdateChecker")
 
 enum UpdateChecker {
 
