@@ -432,7 +432,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSTool
     }
 
     func toggleClipboard() {
-        guard let window = editorWindow else { return }
+        guard SettingsStore.shared.clipboardEnabled, let window = editorWindow else { return }
 
         if window.isKeyWindow {
             windowWasVisible = false

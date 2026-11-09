@@ -933,7 +933,9 @@ final class EditorCoordinator: BonsplitDelegate, @unchecked Sendable {
     @MainActor
     private func applyClipboardEnabled(_ enabled: Bool) {
         if enabled {
-            ClipboardStore.shared.startMonitoring()
+            if !ClipboardStore.shared.isMonitoring {
+                ClipboardStore.shared.startMonitoring()
+            }
             if clipboardTabID == nil {
                 if let clipTabID = controller.createTab(title: "Clipboard", icon: "clipboardIcon", isClosable: false, isPinned: true) {
                     clipboardTabID = clipTabID

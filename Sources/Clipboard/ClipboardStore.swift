@@ -33,6 +33,7 @@ class ClipboardStore {
     var entries: [ClipboardEntry] = []
 
     private var timer: Timer?
+    var isMonitoring: Bool { timer != nil }
     private var lastChangeCount: Int
     private var saveDebounceWork: DispatchWorkItem?
     private var lastPruneDate: Date = .distantPast
