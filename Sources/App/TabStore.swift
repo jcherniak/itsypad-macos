@@ -61,7 +61,13 @@ class TabStore: ObservableObject {
     static let shared = TabStore()
 
     @Published var tabs: [TabData] = []
-    @Published var selectedTabID: UUID?
+    @Published var selectedTabID: UUID? {
+        didSet {
+            if let previous = oldValue, previous != selectedTabID {
+                commitPendingSnapshot(id: previous)
+            }
+        }
+    }
     @Published var lastICloudSync: Date?
     private(set) var savedLayout: LayoutNode?
     var currentLayout: LayoutNode?
@@ -71,11 +77,21 @@ class TabStore: ObservableObject {
     private let sessionURL: URL
     private var kvsMigration: KVSMigration?
 
+    let versionStore: VersionStore
+    var now: () -> Date = Date.init
+    var idleSnapshotInterval: TimeInterval = 3
+    var heldSnapshotInterval: TimeInterval = 10
+    var scheduleSnapshot: (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+    var deviceName: String = Host.current().localizedName ?? "Mac"
+
     var selectedTab: TabData? {
         tabs.first { $0.id == selectedTabID }
     }
 
-    init(sessionURL: URL? = nil) {
+    init(sessionURL: URL? = nil, versionStore: VersionStore = .shared) {
+        self.versionStore = versionStore
         if let sessionURL {
             self.sessionURL = sessionURL
         } else {
@@ -162,6 +178,8 @@ class TabStore: ObservableObject {
         if isScratch {
             CloudSyncEngine.shared.recordDeleted(id)
         }
+        dropSnapshotState(id: id)
+        versionStore.deleteAll(tabID: id)
         tabs.remove(at: index)
 
         if selectedTabID == id {
@@ -176,6 +194,39 @@ class TabStore: ObservableObject {
     }
 
     func updateContent(id: UUID, content: String) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        guard tabs[index].content != content else { return }
+        let previous = tabs[index].content
+        applyContent(id: id, content: content)
+        if !previous.isEmpty && versionStore.latest(for: id) == nil
+            && pendingSnapshots[id] == nil && heldSnapshots[id] == nil {
+            // First edit of a tab without history: keep the pre-edit text so
+            // the state before version tracking began is restorable too.
+            appendVersion(id: id, text: previous, source: .edit)
+        }
+        recordEdit(id: id, content: content, source: .edit)
+    }
+
+    /// Replaces a tab's text without recording a version – restore and other
+    /// programmatic rewrites go through here. The editor refreshes its text
+    /// view via `cloudTabsMerged`, the same path cloud updates use.
+    func setContentExternally(id: UUID, content: String, cursor: Int? = nil) {
+        guard tabs.contains(where: { $0.id == id }) else { return }
+        dropSnapshotState(id: id)
+        applyContent(id: id, content: content)
+        if let cursor {
+            cursorPositions[id] = cursor
+        }
+        var result = CloudMergeResult()
+        result.updatedTabIDs.append(id)
+        NotificationCenter.default.post(
+            name: Self.cloudTabsMerged,
+            object: self,
+            userInfo: ["result": result]
+        )
+    }
+
+    private func applyContent(id: UUID, content: String) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         guard tabs[index].content != content else { return }
 
@@ -430,6 +481,9 @@ class TabStore: ObservableObject {
             if tabs[localIndex].content != data.content
                 || tabs[localIndex].name != data.name
                 || tabs[localIndex].language != data.language {
+                if tabs[localIndex].content != data.content {
+                    snapshotBeforeCloudOverwrite(id: data.id)
+                }
                 tabs[localIndex].content = data.content
                 tabs[localIndex].name = data.name
                 tabs[localIndex].language = data.language
@@ -469,7 +523,9 @@ class TabStore: ObservableObject {
 
         var result = CloudMergeResult()
         result.removedTabIDs.append(id)
+        dropSnapshotState(id: id)
         tabs.removeAll { $0.id == id }
+        versionStore.deleteAll(tabID: id)
 
         if tabs.isEmpty {
             addNewTab()
@@ -482,6 +538,133 @@ class TabStore: ObservableObject {
             userInfo: ["result": result]
         )
         scheduleSave()
+    }
+
+    // MARK: - Version history
+
+    private struct PendingSnapshot {
+        var content: String
+        var source: TabVersion.Source
+        var work: DispatchWorkItem?
+    }
+
+    private var pendingSnapshots: [UUID: PendingSnapshot] = [:]
+    private var heldSnapshots: [UUID: PendingSnapshot] = [:]
+
+    func isScratchTab(_ id: UUID) -> Bool {
+        tabs.contains { $0.id == id && $0.fileURL == nil }
+    }
+
+    /// Snapshot scheduling for one edit: immediate when the text changed by
+    /// ≥ 10 % (at least 20 chars) or ≥ 200 chars against the latest version,
+    /// otherwise after `idleSnapshotInterval` of no further edits. `hold`
+    /// parks the snapshot in memory instead (see commit/discardHeldSnapshot);
+    /// it auto-commits after `heldSnapshotInterval` or on the next real edit.
+    func recordEdit(id: UUID, content: String, source: TabVersion.Source = .edit, hold: Bool = false) {
+        guard tabs.contains(where: { $0.id == id }) else { return }
+        if hold {
+            cancelPendingSnapshot(id: id)
+            heldSnapshots[id]?.work?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                self?.commitHeldSnapshot(id: id)
+            }
+            heldSnapshots[id] = PendingSnapshot(content: content, source: source, work: work)
+            scheduleSnapshot(heldSnapshotInterval, work)
+            return
+        }
+        if heldSnapshots[id] != nil {
+            commitHeldSnapshot(id: id)
+        }
+
+        cancelPendingSnapshot(id: id)
+        if let latest = versionStore.latest(for: id), Self.isSignificantChange(from: latest.text, to: content) {
+            appendVersion(id: id, text: content, source: source)
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            self?.commitPendingSnapshot(id: id)
+        }
+        pendingSnapshots[id] = PendingSnapshot(content: content, source: source, work: work)
+        scheduleSnapshot(idleSnapshotInterval, work)
+    }
+
+    static func isSignificantChange(from old: String, to new: String) -> Bool {
+        let oldLength = old.utf16.count
+        let delta = abs(new.utf16.count - oldLength)
+        if delta >= 200 { return true }
+        return delta >= 20 && delta * 10 >= oldLength
+    }
+
+    func commitPendingSnapshot(id: UUID) {
+        guard let pending = pendingSnapshots.removeValue(forKey: id) else { return }
+        pending.work?.cancel()
+        appendVersion(id: id, text: pending.content, source: pending.source)
+    }
+
+    func commitHeldSnapshot(id: UUID) {
+        guard let held = heldSnapshots.removeValue(forKey: id) else { return }
+        held.work?.cancel()
+        appendVersion(id: id, text: held.content, source: held.source)
+    }
+
+    func discardHeldSnapshot(id: UUID) {
+        heldSnapshots.removeValue(forKey: id)?.work?.cancel()
+    }
+
+    /// Commits every pending and held snapshot – call before the app goes to
+    /// the background or quits.
+    func flushPendingVersions() {
+        for id in Array(pendingSnapshots.keys) {
+            commitPendingSnapshot(id: id)
+        }
+        for id in Array(heldSnapshots.keys) {
+            commitHeldSnapshot(id: id)
+        }
+    }
+
+    /// History is never rewritten: the live text is saved as a `.restore`
+    /// version first, then the chosen version becomes the live text.
+    func restoreVersion(id: UUID, version: TabVersion) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }), version.tabID == id else { return }
+        // The pending snapshot holds the live text, which is about to be saved
+        // as the restore point anyway; a held one may differ, so commit it.
+        cancelPendingSnapshot(id: id)
+        commitHeldSnapshot(id: id)
+        appendVersion(id: id, text: tabs[index].content, source: .restore)
+        setContentExternally(id: id, content: version.text, cursor: 0)
+    }
+
+    private func snapshotBeforeCloudOverwrite(id: UUID) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        dropSnapshotState(id: id)
+        appendVersion(id: id, text: tabs[index].content, source: .conflict)
+    }
+
+    private func cancelPendingSnapshot(id: UUID) {
+        pendingSnapshots.removeValue(forKey: id)?.work?.cancel()
+    }
+
+    private func dropSnapshotState(id: UUID) {
+        cancelPendingSnapshot(id: id)
+        discardHeldSnapshot(id: id)
+    }
+
+    @discardableResult
+    private func appendVersion(id: UUID, text: String, source: TabVersion.Source) -> Bool {
+        guard tabs.contains(where: { $0.id == id }) else { return false }
+        let latest = versionStore.latest(for: id)
+        if latest == nil && text.isEmpty { return false }
+        let version = TabVersion(
+            tabID: id,
+            parentID: latest?.id,
+            createdAt: now(),
+            device: deviceName,
+            text: text,
+            source: source
+        )
+        guard versionStore.append(version) else { return false }
+        versionStore.prune(tabID: id, now: now())
+        return true
     }
 
     // MARK: - KVS migration (v1.6.0 iCloud sync → App Store)

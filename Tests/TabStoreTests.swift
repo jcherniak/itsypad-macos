@@ -4,19 +4,40 @@ import XCTest
 final class TabStoreTests: XCTestCase {
     private var store: TabStore!
     private var tempURL: URL!
+    private var versionsURL: URL!
+    private var versionStore: VersionStore!
+    private var scheduled: [DispatchWorkItem] = []
+    private var clock = Date(timeIntervalSince1970: 1_800_000_000)
 
     override func setUp() {
         super.setUp()
         tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("json")
-        store = TabStore(sessionURL: tempURL)
+        versionsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("versions-\(UUID().uuidString)")
+        versionStore = VersionStore(baseURL: versionsURL)
+        store = makeStore()
     }
 
     override func tearDown() {
         try? FileManager.default.removeItem(at: tempURL)
+        try? FileManager.default.removeItem(at: versionsURL)
         store = nil
         super.tearDown()
+    }
+
+    private func makeStore() -> TabStore {
+        let store = TabStore(sessionURL: tempURL, versionStore: versionStore)
+        store.now = { [unowned self] in clock }
+        store.deviceName = "Test Mac"
+        store.scheduleSnapshot = { [unowned self] _, work in scheduled.append(work) }
+        return store
+    }
+
+    /// Runs the most recently scheduled snapshot timer, as the idle delay would.
+    private func fireScheduledSnapshot() {
+        scheduled.last?.perform()
     }
 
     // MARK: - Init
@@ -35,7 +56,7 @@ final class TabStoreTests: XCTestCase {
         let data = try! JSONEncoder().encode(emptySession)
         try! data.write(to: tempURL)
 
-        let restored = TabStore(sessionURL: tempURL)
+        let restored = makeStore()
         XCTAssertEqual(restored.tabs.count, 1)
         XCTAssertEqual(restored.tabs.first?.name, "Untitled")
         XCTAssertEqual(restored.tabs.first?.language, "plain")
@@ -208,7 +229,7 @@ final class TabStoreTests: XCTestCase {
         store.updateContent(id: tabID, content: "persisted content")
         store.saveSession()
 
-        let restored = TabStore(sessionURL: tempURL)
+        let restored = makeStore()
         XCTAssertEqual(restored.tabs.first?.content, "persisted content")
         XCTAssertEqual(restored.selectedTabID, tabID)
     }
@@ -356,6 +377,212 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(store.tabs.count, initialCount)
     }
 
+    // MARK: - Version history
+
+    private func newScratchTab() -> UUID {
+        store.addNewTab()
+        scheduled.removeAll()
+        return store.tabs.last!.id
+    }
+
+    func testRapidEditsProduceOneVersionAfterIdle() {
+        let tabID = newScratchTab()
+        for text in ["h", "he", "hel", "hell", "hello"] {
+            store.updateContent(id: tabID, content: text)
+        }
+        XCTAssertTrue(versionStore.versions(for: tabID).isEmpty)
+        XCTAssertEqual(scheduled.count, 5)
+        fireScheduledSnapshot()
+        let versions = versionStore.versions(for: tabID)
+        XCTAssertEqual(versions.count, 1)
+        XCTAssertEqual(versions.first?.text, "hello")
+        XCTAssertEqual(versions.first?.source, .edit)
+        XCTAssertEqual(versions.first?.device, "Test Mac")
+        XCTAssertEqual(versions.first?.createdAt, clock)
+        XCTAssertNil(versions.first?.parentID)
+    }
+
+    func testIdleSnapshotsChainParents() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "first")
+        fireScheduledSnapshot()
+        clock.addTimeInterval(30)
+        store.updateContent(id: tabID, content: "first second")
+        fireScheduledSnapshot()
+        let versions = versionStore.versions(for: tabID)
+        XCTAssertEqual(versions.map(\.text), ["first second", "first"])
+        XCTAssertEqual(versions[0].parentID, versions[1].id)
+    }
+
+    func testLargeDeltaSnapshotsImmediately() {
+        let tabID = newScratchTab()
+        let base = String(repeating: "x", count: 1000)
+        store.updateContent(id: tabID, content: base)
+        fireScheduledSnapshot()
+        XCTAssertEqual(versionStore.versions(for: tabID).count, 1)
+
+        let count = scheduled.count
+        store.updateContent(id: tabID, content: base + String(repeating: "y", count: 150))
+        XCTAssertEqual(versionStore.versions(for: tabID).count, 2)
+        XCTAssertEqual(scheduled.count, count)
+        XCTAssertEqual(versionStore.latest(for: tabID)?.text.utf16.count, 1150)
+    }
+
+    func testSmallDeltaWaitsForIdle() {
+        let tabID = newScratchTab()
+        let base = String(repeating: "x", count: 1000)
+        store.updateContent(id: tabID, content: base)
+        fireScheduledSnapshot()
+        store.updateContent(id: tabID, content: base + "abc")
+        XCTAssertEqual(versionStore.versions(for: tabID).count, 1)
+        fireScheduledSnapshot()
+        XCTAssertEqual(versionStore.versions(for: tabID).count, 2)
+    }
+
+    func testFirstEditOfExistingTextKeepsBaseline() {
+        let tabID = store.tabs.first!.id
+        let welcome = store.tabs.first!.content
+        store.updateContent(id: tabID, content: "replaced")
+        let versions = versionStore.versions(for: tabID)
+        XCTAssertEqual(versions.map(\.text), ["replaced", welcome])
+        XCTAssertEqual(versions[0].parentID, versions[1].id)
+    }
+
+    func testTabSwitchCommitsPendingSnapshot() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "typed before switching")
+        XCTAssertTrue(versionStore.versions(for: tabID).isEmpty)
+        store.addNewTab()
+        XCTAssertEqual(versionStore.versions(for: tabID).map(\.text), ["typed before switching"])
+        store.selectedTabID = tabID
+        XCTAssertEqual(versionStore.versions(for: tabID).count, 1)
+    }
+
+    func testFlushPendingVersionsCommitsEverything() {
+        let first = newScratchTab()
+        store.updateContent(id: first, content: "one")
+        let second = newScratchTab()
+        store.updateContent(id: second, content: "two")
+        store.recordEdit(id: second, content: "two held", hold: true)
+        store.flushPendingVersions()
+        XCTAssertEqual(versionStore.versions(for: first).map(\.text), ["one"])
+        XCTAssertEqual(versionStore.versions(for: second).map(\.text), ["two held"])
+        XCTAssertFalse(scheduled.isEmpty)
+    }
+
+    func testHeldSnapshotDiscard() {
+        let tabID = newScratchTab()
+        store.recordEdit(id: tabID, content: "pasted", hold: true)
+        XCTAssertTrue(versionStore.versions(for: tabID).isEmpty)
+        store.discardHeldSnapshot(id: tabID)
+        fireScheduledSnapshot()
+        XCTAssertTrue(versionStore.versions(for: tabID).isEmpty)
+    }
+
+    func testHeldSnapshotCommit() {
+        let tabID = newScratchTab()
+        store.recordEdit(id: tabID, content: "pasted", source: .paste, hold: true)
+        store.commitHeldSnapshot(id: tabID)
+        let versions = versionStore.versions(for: tabID)
+        XCTAssertEqual(versions.map(\.text), ["pasted"])
+        XCTAssertEqual(versions.first?.source, .paste)
+        store.commitHeldSnapshot(id: tabID)
+        XCTAssertEqual(versionStore.versions(for: tabID).count, 1)
+    }
+
+    func testHeldSnapshotAutoCommitsOnTimerAndOnNextEdit() {
+        let tabID = newScratchTab()
+        store.recordEdit(id: tabID, content: "pasted", source: .paste, hold: true)
+        fireScheduledSnapshot()
+        XCTAssertEqual(versionStore.versions(for: tabID).map(\.text), ["pasted"])
+
+        store.recordEdit(id: tabID, content: "pasted again", source: .paste, hold: true)
+        store.updateContent(id: tabID, content: "pasted again!")
+        XCTAssertEqual(versionStore.versions(for: tabID).map(\.text), ["pasted again", "pasted"])
+    }
+
+    func testCloudOverwriteSnapshotsLocalTextAsConflict() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "local draft")
+        let record = CloudTabRecord(
+            id: tabID,
+            name: "Remote",
+            content: "remote text",
+            language: "plain",
+            languageLocked: false,
+            lastModified: Date().addingTimeInterval(60)
+        )
+        store.applyCloudTab(record)
+        XCTAssertEqual(store.tabs.last?.content, "remote text")
+        let versions = versionStore.versions(for: tabID)
+        XCTAssertEqual(versions.map(\.text), ["local draft"])
+        XCTAssertEqual(versions.first?.source, .conflict)
+        fireScheduledSnapshot()
+        XCTAssertEqual(versionStore.versions(for: tabID).count, 1)
+    }
+
+    func testRestoreAppendsRestoreVersionAndSetsContent() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "version one")
+        fireScheduledSnapshot()
+        let target = versionStore.latest(for: tabID)!
+        clock.addTimeInterval(60)
+        store.updateContent(id: tabID, content: "version two")
+        fireScheduledSnapshot()
+        clock.addTimeInterval(60)
+        store.updateContent(id: tabID, content: "live text")
+
+        let expectation = expectation(forNotification: TabStore.cloudTabsMerged, object: store) { notification in
+            let result = notification.userInfo?["result"] as? TabStore.CloudMergeResult
+            return result?.updatedTabIDs == [tabID]
+        }
+        store.restoreVersion(id: tabID, version: target)
+        wait(for: [expectation], timeout: 1)
+
+        XCTAssertEqual(store.tabs.last?.content, "version one")
+        let versions = versionStore.versions(for: tabID)
+        XCTAssertEqual(versions.map(\.text), ["live text", "version two", "version one"])
+        XCTAssertEqual(versions.first?.source, .restore)
+        XCTAssertEqual(store.cursorPosition(for: tabID), 0)
+        fireScheduledSnapshot()
+        XCTAssertEqual(versionStore.versions(for: tabID).count, 3)
+    }
+
+    func testSetContentExternallyDoesNotSnapshot() {
+        let tabID = newScratchTab()
+        store.setContentExternally(id: tabID, content: "programmatic")
+        fireScheduledSnapshot()
+        XCTAssertEqual(store.tabs.last?.content, "programmatic")
+        XCTAssertTrue(versionStore.versions(for: tabID).isEmpty)
+    }
+
+    func testCloseTabDeletesVersions() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "will be closed")
+        fireScheduledSnapshot()
+        XCTAssertEqual(versionStore.versions(for: tabID).count, 1)
+        store.closeTab(id: tabID)
+        XCTAssertTrue(versionStore.versions(for: tabID).isEmpty)
+        XCTAssertTrue(VersionStore(baseURL: versionsURL).versions(for: tabID).isEmpty)
+    }
+
+    func testRemoveCloudTabDeletesVersions() {
+        let tabID = newScratchTab()
+        store.updateContent(id: tabID, content: "remote delete")
+        fireScheduledSnapshot()
+        store.removeCloudTab(id: tabID)
+        XCTAssertTrue(versionStore.versions(for: tabID).isEmpty)
+    }
+
+    func testIsSignificantChange() {
+        XCTAssertTrue(TabStore.isSignificantChange(from: "", to: String(repeating: "a", count: 200)))
+        XCTAssertFalse(TabStore.isSignificantChange(from: "", to: "a"))
+        XCTAssertFalse(TabStore.isSignificantChange(from: "short", to: "short!"))
+        XCTAssertTrue(TabStore.isSignificantChange(from: String(repeating: "a", count: 100), to: String(repeating: "a", count: 125)))
+        XCTAssertFalse(TabStore.isSignificantChange(from: String(repeating: "a", count: 1000), to: String(repeating: "a", count: 1050)))
+        XCTAssertTrue(TabStore.isSignificantChange(from: String(repeating: "a", count: 1000), to: String(repeating: "a", count: 850)))
+    }
+
     // MARK: - LayoutNode Codable
 
     func testLayoutNodePaneCodableRoundtrip() throws {
@@ -405,7 +632,7 @@ final class TabStoreTests: XCTestCase {
         store.currentLayout = .pane(PaneNodeData(tabIDs: [tabID], selectedTabID: tabID))
         store.saveSession()
 
-        let restored = TabStore(sessionURL: tempURL)
+        let restored = makeStore()
         XCTAssertNotNil(restored.savedLayout)
         if case .pane(let data) = restored.savedLayout {
             XCTAssertEqual(data.tabIDs, [tabID])
@@ -428,7 +655,7 @@ final class TabStoreTests: XCTestCase {
         ))
         store.saveSession()
 
-        let restored = TabStore(sessionURL: tempURL)
+        let restored = makeStore()
         XCTAssertNotNil(restored.savedLayout)
         if case .split(let data) = restored.savedLayout {
             XCTAssertEqual(data.orientation, "horizontal")
@@ -441,7 +668,7 @@ final class TabStoreTests: XCTestCase {
     func testSessionPersistenceWithoutLayoutBackwardCompatible() {
         store.saveSession()
 
-        let restored = TabStore(sessionURL: tempURL)
+        let restored = makeStore()
         XCTAssertNil(restored.savedLayout)
     }
 

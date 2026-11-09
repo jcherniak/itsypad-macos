@@ -41,5 +41,6 @@ final class CloudSyncEngineTests: XCTestCase {
     func testRecordTypeRawValues() {
         XCTAssertEqual(CloudSyncEngine.RecordType.scratchTab.rawValue, "ScratchTab")
         XCTAssertEqual(CloudSyncEngine.RecordType.clipboardEntry.rawValue, "ClipboardEntry")
+        XCTAssertEqual(CloudSyncEngine.RecordType.tabVersion.rawValue, "TabVersion")
     }
 }
