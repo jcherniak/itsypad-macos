@@ -248,4 +248,36 @@ final class SettingsStoreTests: XCTestCase {
         defaults.set("reopenLast", forKey: "launchBehavior")
         XCTAssertEqual(SettingsStore(defaults: defaults).launchBehavior, .reopenLast)
     }
+
+    // MARK: - History
+
+    func testHistoryDefaults() {
+        XCTAssertTrue(store.versionHistoryEnabled)
+        XCTAssertEqual(store.versionKeepCount, 200)
+        XCTAssertEqual(store.versionKeepDays, 90)
+        XCTAssertEqual(store.trashAutoEmptyDays, 30)
+    }
+
+    func testHistorySettingsPersistToDefaults() {
+        store.versionHistoryEnabled = false
+        store.versionKeepCount = 50
+        store.versionKeepDays = 0
+        store.trashAutoEmptyDays = 7
+        XCTAssertEqual(defaults.object(forKey: "versionHistoryEnabled") as? Bool, false)
+        XCTAssertEqual(defaults.integer(forKey: "versionKeepCount"), 50)
+        XCTAssertEqual(defaults.object(forKey: "versionKeepDays") as? Int, 0)
+        XCTAssertEqual(defaults.integer(forKey: "trashAutoEmptyDays"), 7)
+    }
+
+    func testHistorySettingsLoadFromPrePopulatedDefaults() {
+        defaults.set(false, forKey: "versionHistoryEnabled")
+        defaults.set(0, forKey: "versionKeepCount")
+        defaults.set(365, forKey: "versionKeepDays")
+        defaults.set(0, forKey: "trashAutoEmptyDays")
+        let loaded = SettingsStore(defaults: defaults)
+        XCTAssertFalse(loaded.versionHistoryEnabled)
+        XCTAssertEqual(loaded.versionKeepCount, 0)
+        XCTAssertEqual(loaded.versionKeepDays, 365)
+        XCTAssertEqual(loaded.trashAutoEmptyDays, 0)
+    }
 }

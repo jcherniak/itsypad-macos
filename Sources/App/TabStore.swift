@@ -85,6 +85,9 @@ class TabStore: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
     var deviceName: String = Host.current().localizedName ?? "Mac"
+    var historyEnabled: () -> Bool = { SettingsStore.shared.versionHistoryEnabled }
+    var historyKeepCount: () -> Int = { SettingsStore.shared.versionKeepCount }
+    var historyKeepDays: () -> Int = { SettingsStore.shared.versionKeepDays }
 
     var selectedTab: TabData? {
         tabs.first { $0.id == selectedTabID }
@@ -568,7 +571,7 @@ class TabStore: ObservableObject {
     /// parks the snapshot in memory instead (see commit/discardHeldSnapshot);
     /// it auto-commits after `heldSnapshotInterval` or on the next real edit.
     func recordEdit(id: UUID, content: String, source: TabVersion.Source = .edit, hold: Bool = false) {
-        guard tabs.contains(where: { $0.id == id }) else { return }
+        guard historyEnabled(), tabs.contains(where: { $0.id == id }) else { return }
         if hold {
             cancelPendingSnapshot(id: id)
             heldSnapshots[id]?.work?.cancel()
@@ -670,7 +673,7 @@ class TabStore: ObservableObject {
             source: source
         )
         guard versionStore.append(version) else { return false }
-        versionStore.prune(tabID: id, now: now())
+        versionStore.prune(tabID: id, now: now(), keepCount: historyKeepCount(), keepDays: historyKeepDays())
         return true
     }
 

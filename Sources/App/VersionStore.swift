@@ -56,9 +56,16 @@ enum VersionPrunePolicy {
 
     /// Keeps everything from the last hour, one version per 10-minute bucket
     /// between one hour and one day, one per calendar day beyond that, and at
-    /// most `maxCount` overall. The first, the latest and labelled versions
-    /// are never dropped.
-    static func idsToDrop(versions: [TabVersion], now: Date, calendar: Calendar = .current) -> Set<String> {
+    /// most `keepCount` overall (0 = unlimited). Unprotected versions older
+    /// than `keepDays` days are dropped (0 = unlimited). The first, the latest
+    /// and labelled versions are never dropped.
+    static func idsToDrop(
+        versions: [TabVersion],
+        now: Date,
+        keepCount: Int = maxCount,
+        keepDays: Int = 0,
+        calendar: Calendar = .current
+    ) -> Set<String> {
         guard versions.count > 1 else { return [] }
         let sorted = versions.sorted { $0.createdAt > $1.createdAt }
         var protected = Set<String>()
@@ -91,12 +98,19 @@ enum VersionPrunePolicy {
             }
         }
 
+        if keepDays > 0 {
+            let cutoff = TimeInterval(keepDays) * day
+            for version in sorted where !protected.contains(version.id) && now.timeIntervalSince(version.createdAt) > cutoff {
+                dropped.insert(version.id)
+            }
+        }
+
         var remaining = sorted.count - dropped.count
-        if remaining > maxCount {
+        if keepCount > 0, remaining > keepCount {
             for version in sorted.reversed() where !protected.contains(version.id) && !dropped.contains(version.id) {
                 dropped.insert(version.id)
                 remaining -= 1
-                if remaining <= maxCount { break }
+                if remaining <= keepCount { break }
             }
         }
         return dropped
@@ -202,9 +216,9 @@ final class VersionStore: ObservableObject {
     }
 
     @discardableResult
-    func prune(tabID: UUID, now: Date = Date()) -> [String] {
+    func prune(tabID: UUID, now: Date = Date(), keepCount: Int = VersionPrunePolicy.maxCount, keepDays: Int = 0) -> [String] {
         let stored = load(tabID)
-        let drop = VersionPrunePolicy.idsToDrop(versions: stored, now: now)
+        let drop = VersionPrunePolicy.idsToDrop(versions: stored, now: now, keepCount: keepCount, keepDays: keepDays)
         guard !drop.isEmpty else { return [] }
         let kept = stored.filter { !drop.contains($0.id) }
         store(kept, for: tabID)

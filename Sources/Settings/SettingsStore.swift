@@ -220,6 +220,38 @@ class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var versionHistoryEnabled: Bool = true {
+        didSet {
+            guard !isLoading else { return }
+            defaults.set(versionHistoryEnabled, forKey: "versionHistoryEnabled")
+            NotificationCenter.default.post(name: .settingsChanged, object: nil)
+        }
+    }
+
+    @Published var versionKeepCount: Int = 200 {
+        didSet {
+            guard !isLoading else { return }
+            defaults.set(versionKeepCount, forKey: "versionKeepCount")
+            NotificationCenter.default.post(name: .settingsChanged, object: nil)
+        }
+    }
+
+    @Published var versionKeepDays: Int = 90 {
+        didSet {
+            guard !isLoading else { return }
+            defaults.set(versionKeepDays, forKey: "versionKeepDays")
+            NotificationCenter.default.post(name: .settingsChanged, object: nil)
+        }
+    }
+
+    @Published var trashAutoEmptyDays: Int = 30 {
+        didSet {
+            guard !isLoading else { return }
+            defaults.set(trashAutoEmptyDays, forKey: "trashAutoEmptyDays")
+            NotificationCenter.default.post(name: .settingsChanged, object: nil)
+        }
+    }
+
     @Published var clipboardShortcut: String = "" {
         didSet {
             guard !isLoading else { return }
@@ -346,6 +378,10 @@ class SettingsStore: ObservableObject {
         letterSpacing = defaults.double(forKey: "letterSpacing")
         icloudSync = defaults.object(forKey: "icloudSync") as? Bool ?? true
         clipboardEnabled = defaults.object(forKey: "clipboardEnabled") as? Bool ?? true
+        versionHistoryEnabled = defaults.object(forKey: "versionHistoryEnabled") as? Bool ?? true
+        versionKeepCount = defaults.object(forKey: "versionKeepCount") as? Int ?? 200
+        versionKeepDays = defaults.object(forKey: "versionKeepDays") as? Int ?? 90
+        trashAutoEmptyDays = defaults.object(forKey: "trashAutoEmptyDays") as? Int ?? 30
         if let data = defaults.data(forKey: shortcutKeysKey),
            let keys = try? JSONDecoder().decode(ShortcutKeys.self, from: data) {
             shortcutKeys = keys

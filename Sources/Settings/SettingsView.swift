@@ -122,6 +122,31 @@ struct GeneralSettingsView: View {
                 }
             }
 
+            Section(String(localized: "settings.general.history", defaultValue: "History")) {
+                Toggle(String(localized: "settings.general.history_enabled", defaultValue: "Save version history"), isOn: $store.versionHistoryEnabled)
+                Picker(String(localized: "settings.general.history_keep_count", defaultValue: "Keep versions"), selection: $store.versionKeepCount) {
+                    Text(String(localized: "settings.general.history_unlimited", defaultValue: "Unlimited")).tag(0)
+                    ForEach([50, 100, 200, 500], id: \.self) { Text("\($0)").tag($0) }
+                }
+                .disabled(!store.versionHistoryEnabled)
+                Picker(String(localized: "settings.general.history_keep_days", defaultValue: "Keep for"), selection: $store.versionKeepDays) {
+                    Text(String(localized: "settings.general.history_unlimited", defaultValue: "Unlimited")).tag(0)
+                    ForEach([7, 30, 90, 365], id: \.self) { days in
+                        Text(String(localized: "settings.general.history_days", defaultValue: "\(days) days")).tag(days)
+                    }
+                }
+                .disabled(!store.versionHistoryEnabled)
+                Picker(String(localized: "settings.general.history_trash_auto_empty", defaultValue: "Empty trash after"), selection: $store.trashAutoEmptyDays) {
+                    Text(String(localized: "settings.general.history_never", defaultValue: "Never")).tag(0)
+                    ForEach([7, 30, 90], id: \.self) { days in
+                        Text(String(localized: "settings.general.history_days", defaultValue: "\(days) days")).tag(days)
+                    }
+                }
+                Text(String(localized: "settings.general.history_footer", defaultValue: "Versions are saved automatically while you type and synced with iCloud. The first, latest and named versions are always kept."))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             Section(String(localized: "settings.general.about", defaultValue: "About")) {
                 HStack {
                     Text(String(localized: "settings.general.version", defaultValue: "Version"))

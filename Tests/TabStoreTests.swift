@@ -402,6 +402,27 @@ final class TabStoreTests: XCTestCase {
         XCTAssertNil(versions.first?.parentID)
     }
 
+    func testRecordEditIsNoOpWhenHistoryDisabled() {
+        let tabID = newScratchTab()
+        store.historyEnabled = { false }
+        store.updateContent(id: tabID, content: "hello")
+        XCTAssertTrue(scheduled.isEmpty)
+        XCTAssertTrue(versionStore.versions(for: tabID).isEmpty)
+        store.recordEdit(id: tabID, content: String(repeating: "x", count: 500))
+        XCTAssertTrue(versionStore.versions(for: tabID).isEmpty)
+    }
+
+    func testAppendedVersionsUseInjectedKeepCount() {
+        let tabID = newScratchTab()
+        store.historyKeepCount = { 2 }
+        for index in 1...4 {
+            clock.addTimeInterval(30)
+            store.updateContent(id: tabID, content: "text \(index)")
+            fireScheduledSnapshot()
+        }
+        XCTAssertEqual(versionStore.versions(for: tabID).map(\.text), ["text 4", "text 1"])
+    }
+
     func testIdleSnapshotsChainParents() {
         let tabID = newScratchTab()
         store.updateContent(id: tabID, content: "first")

@@ -241,6 +241,30 @@ final class VersionStoreTests: XCTestCase {
         XCTAssertTrue(drop.contains(list[4].id))
     }
 
+    func testPruneKeepCountLimitsAndZeroIsUnlimited() {
+        let list = (0..<20).map { make("v\($0)", at: now.addingTimeInterval(-Double($0))) }
+        let drop = VersionPrunePolicy.idsToDrop(versions: list, now: now, keepCount: 10)
+        XCTAssertEqual(drop.count, 10)
+        XCTAssertFalse(drop.contains(list[0].id))
+        XCTAssertFalse(drop.contains(list[19].id))
+        let big = (0..<250).map { make("b\($0)", at: now.addingTimeInterval(-Double($0))) }
+        XCTAssertTrue(VersionPrunePolicy.idsToDrop(versions: big, now: now, keepCount: 0).isEmpty)
+    }
+
+    func testPruneKeepDaysDropsOldButProtectsFirstLatestLabelled() {
+        let day = 86_400.0
+        let list = [
+            make("latest", at: now),
+            make("recent", at: now.addingTimeInterval(-3 * day)),
+            make("old1", at: now.addingTimeInterval(-10 * day)),
+            make("oldLabelled", at: now.addingTimeInterval(-11 * day), label: "Keep"),
+            make("old2", at: now.addingTimeInterval(-12 * day)),
+            make("first", at: now.addingTimeInterval(-20 * day))
+        ]
+        let drop = VersionPrunePolicy.idsToDrop(versions: list, now: now, keepCount: 0, keepDays: 7)
+        XCTAssertEqual(drop, [list[2].id, list[4].id])
+    }
+
     func testPruneCapsAtTwoHundred() {
         let list = (0..<250).map { make("v\($0)", at: now.addingTimeInterval(-Double($0))) }
         let drop = VersionPrunePolicy.idsToDrop(versions: list, now: now)
